@@ -48,7 +48,7 @@ export class EoliaPlatformAccessory {
       || this.accessory.addService(this.platform.Service.HeaterCooler);
 
     // set the service name, this is what is displayed as the default name on the Home app
-    this.service.setCharacteristic(this.platform.Characteristic.Name, 'newエアコン');
+    this.service.setCharacteristic(this.platform.Characteristic.Name, 'エアコン');
 
     // each service must implement at-minimum the "required characteristics" for the given service type
     // see https://developers.homebridge.io/#/service/Lightbulb
@@ -66,6 +66,7 @@ export class EoliaPlatformAccessory {
       .onSet(this.handleTargetHeaterCoolerStateSet.bind(this));
 
     this.service.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
+      .setProps({minValue: -127, maxValue: 125, minStep: 1})
       .onGet(this.handleCurrentTemperatureGet.bind(this));
   }
 
@@ -127,13 +128,17 @@ export class EoliaPlatformAccessory {
   /**
    * Handle requests to get the current value of the "Current Temperature" characteristic
    */
-  handleCurrentTemperatureGet() {
+  async handleCurrentTemperatureGet() {
     this.platform.log.debug('Triggered GET CurrentTemperature');
 
     // set this to a valid value for CurrentTemperature
-    const currentValue = -270;
-
+    const res = await this.getPropertyValue(this.address, this.eoj, 0xBB);
+    const currentValue = res.message.data.temperature;
     return currentValue;
+  }
+
+  async getPropertyValue(address, eoj, edt) {
+    return await promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
   }
 
 }
