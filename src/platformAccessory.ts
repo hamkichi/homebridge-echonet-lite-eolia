@@ -1,6 +1,7 @@
 import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
 
 import { EoliaPlatform } from './platform';
+import { promisify } from 'util';
 
 /**
  * Platform Accessory
@@ -72,7 +73,8 @@ export class EoliaPlatformAccessory {
     this.platform.log.debug('Triggered GET Active');
     let status = false;
     try {
-      status = (await this.platform.el.getPropertyValue(this.address, this.eoj, 0x80)).message.data.status;
+      const res = await promisify(this.platform.el.getPropertyValue)(this.address, this.eoj, 0x80);
+      status = res.message.data.status;
     } catch (err) {
       status = this.states.Active;
       this.platform.log.info(err);
