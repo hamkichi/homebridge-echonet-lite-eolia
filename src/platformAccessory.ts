@@ -66,71 +66,7 @@ export class EoliaPlatformAccessory {
 
     this.service.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
       .onGet(this.handleCurrentTemperatureGet.bind(this));
-
-    /**
-     * Creating multiple services of the same type.
-     *
-     * To avoid "Cannot add a Service with the same UUID another Service without also defining a unique 'subtype' property." error,
-     * when creating multiple services of the same type, you need to use the following syntax to specify a name and subtype id:
-     * this.accessory.getService('NAME') || this.accessory.addService(this.platform.Service.Lightbulb, 'NAME', 'USER_DEFINED_SUBTYPE_ID');
-     *
-     * The USER_DEFINED_SUBTYPE must be unique to the platform accessory (if you platform exposes multiple accessories, each accessory
-     * can use the same sub type id.)
-     */
-
-    // Example: add two "motion sensor" services to the accessory
-    // const motionSensorOneService = this.accessory.getService('Motion Sensor One Name') ||
-    //   this.accessory.addService(this.platform.Service.MotionSensor, 'Motion Sensor One Name', 'YourUniqueIdentifier-1');
-
-    // const motionSensorTwoService = this.accessory.getService('Motion Sensor Two Name') ||
-    //   this.accessory.addService(this.platform.Service.MotionSensor, 'Motion Sensor Two Name', 'YourUniqueIdentifier-2');
-
-    // /**
-    //  * Updating characteristics values asynchronously.
-    //  *
-    //  * Example showing how to update the state of a Characteristic asynchronously instead
-    //  * of using the `on('get')` handlers.
-    //  * Here we change update the motion sensor trigger states on and off every 10 seconds
-    //  * the `updateCharacteristic` method.
-    //  *
-    //  */
-    // let motionDetected = false;
-    // setInterval(() => {
-    //   // EXAMPLE - inverse the trigger
-    //   motionDetected = !motionDetected;
-
-    //   // push the new value to HomeKit
-    //   motionSensorOneService.updateCharacteristic(this.platform.Characteristic.MotionDetected, motionDetected);
-    //   motionSensorTwoService.updateCharacteristic(this.platform.Characteristic.MotionDetected, !motionDetected);
-
-    //   this.platform.log.debug('Triggering motionSensorOneService:', motionDetected);
-    //   this.platform.log.debug('Triggering motionSensorTwoService:', !motionDetected);
-    // }, 10000);
   }
-
-  /**
-   * Handle requests to get the current value of the "Active" characteristic
-   */
-  //  this.service.getCharacteristic(this.platform.Characteristic.Active)
-  //  .on('set', async (value, callback) => {
-  //    try {
-  //      await platform.el.setPropertyValue(address, eoj, 0x80, {status: value != 0});
-  //      callback();
-  //    } catch (err) {
-  //      this.platform.log.error(err);
-  //      callback(err);
-  //    }
-  //  })
-  //  .on('get', async (callback) => {
-  //    try {
-  //      const {status} = (await el.getPropertyValue(address, eoj, 0x80)).message.data;
-
-  //      callback(null, status);
-  //    } catch (err) {
-  //      console.log(err);
-  //      callback(err);
-  //    }
-  //  });
 
   async handleActiveGet() {
     this.platform.log.debug('Triggered GET Active');
