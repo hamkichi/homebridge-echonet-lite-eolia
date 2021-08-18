@@ -81,7 +81,7 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
               res = await promisify(this.el.getPropertyValue).bind(this.el)(address, eoj, 0x83);
               let uuid;
               if (res['message']['data']) {
-                uuid = res['message']['data']['uid'];
+                uuid = this.api.hap.uuid.generate(res['message']['data']['uid']);
               } else {
                 uuid = this.api.hap.uuid.generate(address);
               }
