@@ -196,10 +196,12 @@ export class EoliaPlatformAccessory {
   }
 
   async getPropertyValue(address, eoj, edt) {
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 2000));
     return await promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
   }
 
   async setPropertyValue(address, eoj, edt, value){
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 2000));
     await promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
   }
 
