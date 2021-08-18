@@ -102,7 +102,7 @@ export class EoliaPlatformAccessory {
    */
   async handleActiveSet(value: CharacteristicValue) {
     this.platform.log.debug('Triggered SET Active:' + value);
-    await promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(this.address, this.eoj, 0x80, {status: value !== 0});
+    await this.setPropertyValue(this.address, this.eoj, 0x80, {status: value !== 0});
     this.states.Active = (value !== 0);
   }
 
@@ -198,12 +198,12 @@ export class EoliaPlatformAccessory {
   }
 
   async getPropertyValue(address, eoj, edt) {
-    await new Promise(resolve => setTimeout(resolve, Math.random() * 2000));
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 3000));
     return await promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
   }
 
   async setPropertyValue(address, eoj, edt, value){
-    await new Promise(resolve => setTimeout(resolve, Math.random() * 2000));
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 3000));
     await promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
   }
 
