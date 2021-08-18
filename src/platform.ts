@@ -78,7 +78,7 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
             const group_code = eoj[0];
             const class_code = eoj[1];
             if (group_code === 0x01 && class_code === 0x30) {
-              res = await promisify(this.el.getPropertyValue)(address, eoj, 0x83);
+              res = await promisify(this.el.getPropertyValue).bind(this.el)(address, eoj, 0x83);
               let uuid;
               if (res['message']['data']) {
                 uuid = res['message']['data']['uid'];

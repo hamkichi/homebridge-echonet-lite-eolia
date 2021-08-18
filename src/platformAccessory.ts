@@ -70,10 +70,10 @@ export class EoliaPlatformAccessory {
   }
 
   async handleActiveGet() {
-    this.platform.log.debug('Triggered GET Active');
+    this.platform.log.info('Triggered GET Active');
     let status = false;
     try {
-      const res = await promisify(this.platform.el.getPropertyValue)(this.address, this.eoj, 0x80);
+      const res = await promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(this.address, this.eoj, 0x80);
       status = res.message.data.status;
     } catch (err) {
       status = this.states.Active;
@@ -88,7 +88,7 @@ export class EoliaPlatformAccessory {
    */
   async handleActiveSet(value: CharacteristicValue) {
     this.platform.log.debug('Triggered SET Active:' + value);
-    await this.platform.el.setPropertyValue(this.address, this.eoj, 0x80, {status: value !== 0});
+    await promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(this.address, this.eoj, 0x80, {status: value !== 0});
     this.states.Active = (value !== 0);
   }
 
