@@ -79,6 +79,53 @@ export class EoliaPlatformAccessory {
       .onGet(this.handleHeatingThresholdTemperatureGet.bind(this))
       .onSet(this.handleHeatingThresholdTemperatureSet.bind(this));
 
+    this.platform.el.on('notify', this.updateStates.bind(this));
+
+  }
+
+  async updateStates(res) {
+    const { prop } = res.message;
+    if (res.device.address !== this.address) {
+      return;
+    }
+
+    for (const p of prop) {
+      if (!p.edt) {
+        continue;
+      }
+
+      switch (p.epc) {
+        case 0x80: //status
+          this.service.updateCharacteristic(this.platform.Characteristic.Active, p.edt.status);
+          break;
+        case 0xB0: //mode
+          switch(p.edt.mode){
+            case 2: //Cooler
+              this.service.updateCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState,
+                this.platform.Characteristic.TargetHeaterCoolerState.COOL);
+              this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState,
+                this.platform.Characteristic.CurrentHeaterCoolerState.COOLING);
+              break;
+            case 3: //Heater
+              this.service.updateCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState,
+                this.platform.Characteristic.TargetHeaterCoolerState.HEAT);
+              this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState,
+                this.platform.Characteristic.CurrentHeaterCoolerState.HEATING);
+              break;
+            default: //Auto
+              this.service.updateCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState,
+                this.platform.Characteristic.TargetHeaterCoolerState.AUTO);
+              break;
+          }
+          break;
+        case 0xB3: //target temperature
+          this.service.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, p.edt.temperature);
+          this.service.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, p.edt.temperature);
+          break;
+        case 0xBB: //current temperature
+          this.service.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, p.edt.temperature);
+      }
+    }
   }
 
   async handleActiveGet() {
