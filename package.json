@@ -1,16 +1,15 @@
 {
-  "private": true,
-  "displayName": "Plugin Name",
-  "name": "homebridge-plugin-name",
-  "version": "1.0.0",
+  "displayName": "Homebridge Echonet Lite Eolia",
+  "name": "homebridge-echonet-lite-eolia",
+  "version": "0.0.1",
   "description": "A short description about what your plugin does.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git://github.com/USERNAME/GITHUB_PROJECT_NAME.git"
+    "url": "https://github.com/k8sinfo/homebridge-echonet-lite-eolia.git"
   },
   "bugs": {
-    "url": "https://github.com/USERNAME/GITHUB_PROJECT_NAME/issues"
+    "url": "https://github.com/k8sinfo/homebridge-echonet-lite-eolia/issues"
   },
   "engines": {
     "node": ">=12.13.0",
@@ -24,7 +23,9 @@
     "prepublishOnly": "npm run lint && npm run build"
   },
   "keywords": [
-    "homebridge-plugin"
+    "homebridge-plugin",
+    "eolia",
+    "panasonic"
   ],
   "dependencies": {
     "node-echonet-lite": "^0.6.0"
