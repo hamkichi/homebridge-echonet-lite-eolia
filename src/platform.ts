@@ -3,8 +3,8 @@ import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { EoliaPlatformAccessory } from './platformAccessory';
 
-import { EchonetLite } from 'node-echonet-lite';
-import { promisify } from 'node:util';
+import EchonetLite from 'node-echonet-lite';
+import { promisify } from 'util';
 
 
 /**
