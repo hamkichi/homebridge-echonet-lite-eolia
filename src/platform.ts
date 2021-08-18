@@ -65,7 +65,7 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
    */
   async discoverDevices() {
     // Start to discover Echonet Lite devices
-    this.el.startDiscovery(async (err: any, res: any) => {
+    this.el.startDiscovery(async (err, res) => {
       if(err) {
         this.log.error(err);
       } else {
