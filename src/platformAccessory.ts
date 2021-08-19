@@ -11,20 +11,9 @@ import { promisify } from 'util';
 export class EoliaPlatformAccessory {
   private service: Service;
 
-  /**
-   * These are just used to create a working example
-   * You should implement your own code to track the state of your accessory
-   */
-  private states = {
-    Active: false,
-    Mode: 0,
-    Temperature: 20,
-    TargetTemperature: 20,
-    CurrentTemperature: 20,
-  };
-
   private address;
   private eoj;
+  private isActive; //power on: true, off: false
 
   constructor(
     private readonly platform: EoliaPlatform,
@@ -33,6 +22,7 @@ export class EoliaPlatformAccessory {
 
     this.address = accessory.context.address;
     this.eoj = accessory.context.eoj;
+    this.isActive = false;
 
     // set accessory information
     // Manufacturer(0x8A): Panasonic's manufacturer code is 11 so set fixed value
@@ -83,7 +73,177 @@ export class EoliaPlatformAccessory {
 
   }
 
+  /**
+   * Handle requests to get the current value of the "Active" characteristic
+   */
+  async handleActiveGet() {
+    this.platform.log.debug('Triggered GET Active');
+
+    let currentValue = false;
+
+    try {
+      const res = await this.getPropertyValue(this.address, this.eoj, 0x80);
+      currentValue = res.message.data.status;
+      this.isActive = currentValue;
+    } catch (err) {
+      currentValue = this.isActive;
+      this.platform.log.error(err);
+    }
+
+    return currentValue;
+  }
+
+  /**
+   * Handle requests to set the "Active" characteristic
+   */
+  handleActiveSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET Active:' + value);
+
+    try {
+      this.setPropertyValue(this.address, this.eoj, 0x80, {status: value !== 0});
+      this.isActive = (value !== 0);
+    } catch (err) {
+      this.platform.log.error(err);
+    }
+  }
+
+  /**
+   * Handle requests to get the current value of the "Current Heater-Cooler State" characteristic
+   */
+  async handleCurrentHeaterCoolerStateGet() {
+    this.platform.log.debug('Triggered GET CurrentHeaterCoolerState');
+
+    const active = await this.handleActiveGet();
+    let currentValue = this.platform.Characteristic.CurrentHeaterCoolerState.INACTIVE;
+
+    if (active) {
+      const res = await this.getPropertyValue(this.address, this.eoj, 0xB0);
+      try {
+        const mode = res.message.data.mode;
+        currentValue = mode===2 ? this.platform.Characteristic.CurrentHeaterCoolerState.COOLING
+          : this.platform.Characteristic.CurrentHeaterCoolerState.HEATING;
+      } catch (err) {
+        this.platform.log.error(err);
+      }
+    }
+    return currentValue;
+  }
+
+  /**
+   * Handle requests to get the current value of the "Target Heater-Cooler State" characteristic
+   */
+  async handleTargetHeaterCoolerStateGet() {
+    this.platform.log.debug('Triggered GET TargetHeaterCoolerState');
+
+    let currentValue = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
+
+    if (this.isActive) {
+      const res = await this.getPropertyValue(this.address, this.eoj, 0xB0);
+      try {
+        const mode = res.message.data.mode;
+        if (mode === 2) {
+          currentValue = this.platform.Characteristic.TargetHeaterCoolerState.COOL;
+        } else if (mode === 3) {
+          currentValue = this.platform.Characteristic.TargetHeaterCoolerState.HEAT;
+        }
+      } catch (err) {
+        this.platform.log.error(err);
+      }
+    }
+
+    return currentValue;
+  }
+
+  /**
+   * Handle requests to set the "Target Heater-Cooler State" characteristic
+   */
+  async handleTargetHeaterCoolerStateSet(value) {
+    this.platform.log.debug('Triggered SET TargetHeaterCoolerState:' + value);
+
+    let mode = 1; // AUTO
+    if (value === this.platform.Characteristic.TargetHeaterCoolerState.COOL) {
+      mode = 2; //COOLER
+    } else if (value === this.platform.Characteristic.TargetHeaterCoolerState.HEAT) {
+      mode = 3; //HEATER
+    }
+
+    this.setPropertyValue(this.address, this.eoj, 0xB0, {mode});
+  }
+
+  /**
+   * Handle requests to get the current value of the "Current Temperature" characteristic
+   */
+  async handleCurrentTemperatureGet() {
+    this.platform.log.debug('Triggered GET CurrentTemperature');
+
+    let currentValue = -127;
+
+    try {
+      const res = await this.getPropertyValue(this.address, this.eoj, 0xBB);
+      currentValue = res.message.data.temperature;
+    } catch (err) {
+      this.platform.log.error(err);
+    }
+    return currentValue;
+  }
+
+  /**
+   * Handle requests to get the current value of the "Cooling Threshold Temperature" characteristic
+   */
+  async handleCoolingThresholdTemperatureGet() {
+    this.platform.log.debug('Triggered GET CoolingThresholdTemperature');
+
+    let currentValue = 16;
+    try {
+      const res = await this.getPropertyValue(this.address, this.eoj, 0xB3);
+      currentValue = res.message.data.temperature;
+    } catch (err) {
+      this.platform.log.error(err);
+    }
+
+    return currentValue;
+  }
+
+  /**
+   * Handle requests to set the "Cooling Threshold Temperature" characteristic
+   */
+  handleCoolingThresholdTemperatureSet(value) {
+    this.platform.log.debug('Triggered SET CoolingThresholdTemperature:' + value);
+    this.setPropertyValue(this.address, this.eoj, 0xB3, {temperature: parseInt(value)});
+  }
+
+  /**
+   * Handle requests to get the current value of the "Heating Threshold Temperature" characteristic
+   */
+  async handleHeatingThresholdTemperatureGet() {
+    this.platform.log.debug('Triggered GET HeatingThresholdTemperature');
+
+    let currentValue = 16;
+
+    try {
+      const res = await this.getPropertyValue(this.address, this.eoj, 0xB3);
+      currentValue = res.message.data.temperature;
+    } catch (err) {
+      this.platform.log.error(err);
+    }
+
+    return currentValue;
+  }
+
+  /**
+   * Handle requests to set the "Heating Threshold Temperature" characteristic
+   */
+  async handleHeatingThresholdTemperatureSet(value) {
+    this.platform.log.debug('Triggered SET HeatingThresholdTemperature:' + value);
+    this.setPropertyValue(this.address, this.eoj, 0xB3, {temperature: parseInt(value)});
+  }
+
+  /**
+   * Handle status change event
+   */
   async updateStates(res) {
+    this.platform.log.info('Received status update');
+
     const { prop } = res.message;
     if (res.device.address !== this.address) {
       return;
@@ -128,127 +288,17 @@ export class EoliaPlatformAccessory {
     }
   }
 
-  async handleActiveGet() {
-    this.platform.log.debug('Triggered GET Active');
-    this.platform.log.debug(this.address);
-    this.platform.log.debug(this.eoj);
-    let status = false;
-    try {
-      const res = await this.getPropertyValue(this.address, this.eoj, 0x80);
-      status = res.message.data.status;
-    } catch (err) {
-      status = this.states.Active;
-      this.platform.log.error(err);
-    }
-    // set this to a valid value for Active
-    return status;
-  }
-
   /**
-   * Handle requests to set the "Active" characteristic
+   * Promisified Echonet.getPropertyValue
    */
-  async handleActiveSet(value: CharacteristicValue) {
-    this.platform.log.debug('Triggered SET Active:' + value);
-    await this.setPropertyValue(this.address, this.eoj, 0x80, {status: value !== 0});
-    this.states.Active = (value !== 0);
-  }
-
-  /**
-   * Handle requests to get the current value of the "Current Heater-Cooler State" characteristic
-   */
-  async handleCurrentHeaterCoolerStateGet() {
-    this.platform.log.debug('Triggered GET CurrentHeaterCoolerState');
-    const status = await this.handleActiveGet();
-    // set this to a valid value for CurrentHeaterCoolerState
-    let currentValue = this.platform.Characteristic.CurrentHeaterCoolerState.INACTIVE;
-    if (status) {
-      const res = await this.getPropertyValue(this.address, this.eoj, 0xB0);
-      const mode = res.message.data.mode;
-      currentValue = mode===2 ? this.platform.Characteristic.CurrentHeaterCoolerState.COOLING
-        : this.platform.Characteristic.CurrentHeaterCoolerState.HEATING;
-    }
-    return currentValue;
-  }
-
-
-  /**
-   * Handle requests to get the current value of the "Target Heater-Cooler State" characteristic
-   */
-  async handleTargetHeaterCoolerStateGet() {
-    this.platform.log.debug('Triggered GET TargetHeaterCoolerState');
-
-    // set this to a valid value for TargetHeaterCoolerState
-    let currentValue = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
-    const status = await this.handleActiveGet();
-    if (status) {
-      const res = await this.getPropertyValue(this.address, this.eoj, 0xB0);
-      const mode = res.message.data.mode;
-      if (mode === 2) {
-        currentValue = this.platform.Characteristic.TargetHeaterCoolerState.COOL;
-      } else if (mode === 3) {
-        currentValue = this.platform.Characteristic.TargetHeaterCoolerState.HEAT;
-      }
-    }
-    return currentValue;
-  }
-
-  /**
-   * Handle requests to set the "Target Heater-Cooler State" characteristic
-   */
-  async handleTargetHeaterCoolerStateSet(value) {
-    this.platform.log.debug('Triggered SET TargetHeaterCoolerState:' + value);
-    let mode = 1; // AUTO
-    if (value === this.platform.Characteristic.TargetHeaterCoolerState.COOL) {
-      mode = 2; //COOLER
-    } else if (value === this.platform.Characteristic.TargetHeaterCoolerState.HEAT) {
-      mode = 3; //HEATER
-    }
-    await this.setPropertyValue(this.address, this.eoj, 0xB0, {mode});
-  }
-
-  /**
-   * Handle requests to get the current value of the "Current Temperature" characteristic
-   */
-  async handleCurrentTemperatureGet() {
-    this.platform.log.debug('Triggered GET CurrentTemperature');
-
-    const res = await this.getPropertyValue(this.address, this.eoj, 0xBB);
-    const currentValue = res.message.data.temperature;
-    return currentValue;
-  }
-
-  async handleCoolingThresholdTemperatureGet() {
-    this.platform.log.debug('Triggered GET CoolingThresholdTemperature');
-
-    const res = await this.getPropertyValue(this.address, this.eoj, 0xB3);
-    const currentValue = res.message.data.temperature;
-    return currentValue;
-
-  }
-
-  async handleCoolingThresholdTemperatureSet(value) {
-    this.platform.log.debug('Triggered SET CoolingThresholdTemperature:' + value);
-    await this.setPropertyValue(this.address, this.eoj, 0xB3, {temperature: parseInt(value)});
-  }
-
-  async handleHeatingThresholdTemperatureGet() {
-    this.platform.log.debug('Triggered GET HeatingThresholdTemperature');
-
-    const res = await this.getPropertyValue(this.address, this.eoj, 0xB3);
-    const currentValue = res.message.data.temperature;
-    return currentValue;
-  }
-
-  async handleHeatingThresholdTemperatureSet(value) {
-    this.platform.log.debug('Triggered SET HeatingThresholdTemperature:' + value);
-    await this.setPropertyValue(this.address, this.eoj, 0xB3, {temperature: parseInt(value)});
-  }
-
   async getPropertyValue(address, eoj, edt) {
     await new Promise(resolve => setTimeout(resolve, Math.random() * 3000));
     return await promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
   }
 
+  /**
+   * Promisified Echonet.setPropertyValue
+   */
   async setPropertyValue(address, eoj, edt, value){
     await new Promise(resolve => setTimeout(resolve, Math.random() * 3000));
     await promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
