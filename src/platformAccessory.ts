@@ -257,9 +257,11 @@ export class EoliaPlatformAccessory {
 
       switch (p.epc) {
         case 0x80: //status
+          this.platform.log.debug('Received status update - active:' + p.edt.status);
           this.service.updateCharacteristic(this.platform.Characteristic.Active, p.edt.status);
           break;
         case 0xB0: //mode
+          this.platform.log.debug('Received status update - mode:' + p.edt.mode);
           switch(p.edt.mode){
             case 2: //Cooler
               this.service.updateCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState,
@@ -280,10 +282,12 @@ export class EoliaPlatformAccessory {
           }
           break;
         case 0xB3: //target temperature
+          this.platform.log.debug('Received status update - target temperature:' + p.edt.temperature);
           this.service.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, p.edt.temperature);
           this.service.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, p.edt.temperature);
           break;
         case 0xBB: //current temperature
+          this.platform.log.debug('Received status update - current temperature:' + p.edt.temperature);
           this.service.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, p.edt.temperature);
       }
     }
@@ -299,7 +303,6 @@ export class EoliaPlatformAccessory {
         resolve(result);
       });
     });
-    this.platform.log.debug('propertyValue:' + propertyValue);
     return propertyValue;
   }
 
