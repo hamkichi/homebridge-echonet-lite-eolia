@@ -2,6 +2,7 @@ import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
 
 import { EoliaPlatform } from './platform';
 import { promisify } from 'util';
+import { JobQueue } from './jobQueue';
 
 /**
  * Platform Accessory
@@ -13,7 +14,8 @@ export class EoliaPlatformAccessory {
 
   private address;
   private eoj;
-  private isActive; //power on: true, off: false
+  private isActive = false; //power on: true, off: false
+  private jobQueue: JobQueue = new JobQueue();
 
   constructor(
     private readonly platform: EoliaPlatform,
@@ -22,7 +24,6 @@ export class EoliaPlatformAccessory {
 
     this.address = accessory.context.address;
     this.eoj = accessory.context.eoj;
-    this.isActive = false;
 
     // set accessory information
     // Manufacturer(0x8A): Panasonic's manufacturer code is 11 so set fixed value
@@ -292,16 +293,26 @@ export class EoliaPlatformAccessory {
    * Promisified Echonet.getPropertyValue
    */
   async getPropertyValue(address, eoj, edt) {
-    await new Promise(resolve => setTimeout(resolve, Math.random() * 3000));
-    return await promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
+    const propertyValue = await this.jobQueue.addJob(() => {
+      return new Promise(resolve => {
+        const result = promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
+        resolve(result);
+      });
+    });
+    this.platform.log.debug('propertyValue:' + propertyValue);
+    return propertyValue;
   }
 
   /**
    * Promisified Echonet.setPropertyValue
    */
   async setPropertyValue(address, eoj, edt, value){
-    await new Promise(resolve => setTimeout(resolve, Math.random() * 3000));
-    await promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
+    await this.jobQueue.addJob(() => {
+      return new Promise<void>(resolve => {
+        promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
+        resolve();
+      });
+    });
   }
 
 }
