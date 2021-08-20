@@ -2,6 +2,7 @@ import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
 
 import { EoliaPlatform } from './platform';
 import { promisify } from 'util';
+import { JobQueue } from './jobQueue';
 
 /**
  * Platform Accessory
@@ -13,7 +14,8 @@ export class EoliaPlatformAccessory {
 
   private address;
   private eoj;
-  private isActive; //power on: true, off: false
+  private isActive = false; //power on: true, off: false
+  private jobQueue: JobQueue = new JobQueue();
 
   constructor(
     private readonly platform: EoliaPlatform,
@@ -22,7 +24,6 @@ export class EoliaPlatformAccessory {
 
     this.address = accessory.context.address;
     this.eoj = accessory.context.eoj;
-    this.isActive = false;
 
     // set accessory information
     // Manufacturer(0x8A): Panasonic's manufacturer code is 11 so set fixed value
@@ -242,7 +243,6 @@ export class EoliaPlatformAccessory {
    * Handle status change event
    */
   async updateStates(res) {
-    this.platform.log.debug('Received status update');
 
     const { prop } = res.message;
     if (res.device.address !== this.address) {
@@ -256,9 +256,11 @@ export class EoliaPlatformAccessory {
 
       switch (p.epc) {
         case 0x80: //status
+          this.platform.log.debug('Received status update - active:' + p.edt.status);
           this.service.updateCharacteristic(this.platform.Characteristic.Active, p.edt.status);
           break;
         case 0xB0: //mode
+          this.platform.log.debug('Received status update - mode:' + p.edt.mode);
           switch(p.edt.mode){
             case 2: //Cooler
               this.service.updateCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState,
@@ -279,10 +281,12 @@ export class EoliaPlatformAccessory {
           }
           break;
         case 0xB3: //target temperature
+          this.platform.log.debug('Received status update - target temperature:' + p.edt.temperature);
           this.service.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, p.edt.temperature);
           this.service.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, p.edt.temperature);
           break;
         case 0xBB: //current temperature
+          this.platform.log.debug('Received status update - current temperature:' + p.edt.temperature);
           this.service.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, p.edt.temperature);
       }
     }
@@ -292,16 +296,25 @@ export class EoliaPlatformAccessory {
    * Promisified Echonet.getPropertyValue
    */
   async getPropertyValue(address, eoj, edt) {
-    await new Promise(resolve => setTimeout(resolve, Math.random() * 3000));
-    return await promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
+    const propertyValue = await this.jobQueue.addJob(() => {
+      return new Promise(resolve => {
+        const result = promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
+        resolve(result);
+      });
+    });
+    return propertyValue;
   }
 
   /**
    * Promisified Echonet.setPropertyValue
    */
   async setPropertyValue(address, eoj, edt, value){
-    await new Promise(resolve => setTimeout(resolve, Math.random() * 3000));
-    await promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
+    await this.jobQueue.addJob(() => {
+      return new Promise<void>(resolve => {
+        promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
+        resolve();
+      });
+    });
   }
 
 }
