@@ -243,7 +243,6 @@ export class EoliaPlatformAccessory {
    * Handle status change event
    */
   async updateStates(res) {
-    this.platform.log.debug('Received status update');
 
     const { prop } = res.message;
     if (res.device.address !== this.address) {
