@@ -85,12 +85,14 @@ export class EoliaPlatformAccessory {
     try {
       const res = await this.getPropertyValue(this.address, this.eoj, 0x80);
       currentValue = res.message.data.status;
+      if (currentValue === null){
+        currentValue = false;
+      }
       this.isActive = currentValue;
     } catch (err) {
       currentValue = this.isActive;
-      this.platform.log.error(err);
+      this.platform.log.error((err as Error).message);
     }
-
     return currentValue;
   }
 
@@ -104,7 +106,7 @@ export class EoliaPlatformAccessory {
       this.setPropertyValue(this.address, this.eoj, 0x80, {status: value !== 0});
       this.isActive = (value !== 0);
     } catch (err) {
-      this.platform.log.error(err);
+      this.platform.log.error((err as Error).message);
     }
   }
 
@@ -124,7 +126,8 @@ export class EoliaPlatformAccessory {
         currentValue = mode===2 ? this.platform.Characteristic.CurrentHeaterCoolerState.COOLING
           : this.platform.Characteristic.CurrentHeaterCoolerState.HEATING;
       } catch (err) {
-        this.platform.log.error(err);
+        this.platform.log.error((err as Error).message);
+        currentValue = this.platform.Characteristic.CurrentHeaterCoolerState.INACTIVE;
       }
     }
     return currentValue;
@@ -146,9 +149,12 @@ export class EoliaPlatformAccessory {
           currentValue = this.platform.Characteristic.TargetHeaterCoolerState.COOL;
         } else if (mode === 3) {
           currentValue = this.platform.Characteristic.TargetHeaterCoolerState.HEAT;
+        } else {
+          currentValue = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
         }
       } catch (err) {
-        this.platform.log.error(err);
+        this.platform.log.error((err as Error).message);
+        currentValue = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
       }
     }
 
@@ -182,8 +188,12 @@ export class EoliaPlatformAccessory {
     try {
       const res = await this.getPropertyValue(this.address, this.eoj, 0xBB);
       currentValue = res.message.data.temperature;
+      if (currentValue === null){
+        currentValue = -127;
+      }
     } catch (err) {
-      this.platform.log.error(err);
+      this.platform.log.error((err as Error).message);
+      currentValue = -127;
     }
     return currentValue;
   }
@@ -198,8 +208,12 @@ export class EoliaPlatformAccessory {
     try {
       const res = await this.getPropertyValue(this.address, this.eoj, 0xB3);
       currentValue = res.message.data.temperature;
+      if (currentValue === null){
+        currentValue = 16;
+      }
     } catch (err) {
-      this.platform.log.error(err);
+      this.platform.log.error((err as Error).message);
+      currentValue = 16;
     }
 
     return currentValue;
@@ -224,8 +238,12 @@ export class EoliaPlatformAccessory {
     try {
       const res = await this.getPropertyValue(this.address, this.eoj, 0xB3);
       currentValue = res.message.data.temperature;
+      if (currentValue === null){
+        currentValue = 16;
+      }
     } catch (err) {
-      this.platform.log.error(err);
+      this.platform.log.error((err as Error).message);
+      currentValue = 16;
     }
 
     return currentValue;

@@ -96,7 +96,7 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
 
     setTimeout(()=>{
       this.el.stopDiscovery();
-    }, 10 * 1000);
+    }, 60 * 1000);
   }
 
   addAccessory(device, address, eoj, uuid){
