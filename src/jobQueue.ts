@@ -5,7 +5,7 @@ export class JobQueue {
   private jobResolveRejectMap = new Map();
 
   constructor() {
-    this.theQueue = queue({ concurrency: 1, autostart: true });
+    this.theQueue = queue({ concurrency: 2, autostart: true });
 
     this.theQueue.on('success', this.onJobComplete.bind(this));
     this.theQueue.on('error', this.onJobFailed.bind(this));
