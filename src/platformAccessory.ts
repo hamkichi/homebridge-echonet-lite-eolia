@@ -116,10 +116,9 @@ export class EoliaPlatformAccessory {
   async handleCurrentHeaterCoolerStateGet() {
     this.platform.log.debug('Triggered GET CurrentHeaterCoolerState');
 
-    const active = await this.handleActiveGet();
     let currentValue = this.platform.Characteristic.CurrentHeaterCoolerState.INACTIVE;
 
-    if (active) {
+    if (this.isActive) {
       const res = await this.getPropertyValue(this.address, this.eoj, 0xB0);
       try {
         const mode = res.message.data.mode;
