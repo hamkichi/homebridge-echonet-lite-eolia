@@ -1,11 +1,3 @@
-
-<p align="center">
-
-<img src="https://github.com/homebridge/branding/raw/master/logos/homebridge-wordmark-logo-vertical.png" width="150">
-
-</p>
-
-
 # Homebridge Plugin: Echonet Lite for Eolia
 
 This plugin controls Panasonic's air conditioners(Eolia) via Echonet Lite protocol.  You can do following operations via iOS Home app:
