@@ -1,11 +1,3 @@
-
-<p align="center">
-
-<img src="https://github.com/homebridge/branding/raw/master/logos/homebridge-wordmark-logo-vertical.png" width="150">
-
-</p>
-
-
 # Homebridge Plugin: Echonet Lite for Eolia
 
 English: [README_en.md](https://github.com/hamkichi/homebridge-echonet-lite-eolia/blob/master/README_en.md)
