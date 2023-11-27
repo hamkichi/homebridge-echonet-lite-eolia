@@ -8,4 +8,4 @@ export const PLATFORM_NAME = 'EoliaPlatform';
  */
 export const PLUGIN_NAME = 'homebridge-echonet-lite-eolia';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.3.0-beta-2';
