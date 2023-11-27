@@ -88,7 +88,11 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
               this.addAccessory(device, address, eoj, uuid);
             }
           } catch (err) {
-            this.log.error(err);
+            if (err instanceof Error) {
+              this.log.error(err.message);
+            } else {
+              this.log.error(String(err));
+            }
           }
         }
       }
