@@ -1,11 +1,11 @@
-import { API } from 'homebridge';
+import type { API } from 'homebridge';
 
-import { PLATFORM_NAME } from './settings';
-import { EoliaPlatform } from './platform';
+import { EchoNetLiteAirconPlatform } from './platform.js';
+import { PLATFORM_NAME } from './settings.js';
 
 /**
  * This method registers the platform with Homebridge
  */
-export = (api: API) => {
-  api.registerPlatform(PLATFORM_NAME, EoliaPlatform);
+export default (api: API) => {
+  api.registerPlatform(PLATFORM_NAME, EchoNetLiteAirconPlatform);
 };

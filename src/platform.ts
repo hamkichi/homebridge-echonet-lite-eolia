@@ -1,33 +1,124 @@
-import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
+import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
 
-import { PLATFORM_NAME, PLUGIN_NAME, VERSION } from './settings';
-import { EoliaPlatformAccessory } from './platformAccessory';
+import { AirConditionerAccessory } from './platformAccessory.js';
+import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 
-import EchonetLite from 'node-echonet-lite';
-import { promisify } from 'util';
+// This is only required when using Custom Services and Characteristics not support by HomeKit
+import { EveHomeKitTypes } from 'homebridge-lib/EveHomeKitTypes';
 
+// EchoNet-Lite library
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const EL = require('echonet-lite');
+
+interface AirConditionerDevice {
+  ip: string;
+  eoj: string;
+  deviceId: string;
+  manufacturer?: string;
+  model?: string;
+  serialNumber?: string;
+}
 
 /**
- * HomebridgePlatform
+ * EchoNetLiteAirconPlatform
  * This class is the main constructor for your plugin, this is where you should
  * parse the user config and discover/register accessories with Homebridge.
  */
-export class EoliaPlatform implements DynamicPlatformPlugin {
-  public readonly Service: typeof Service = this.api.hap.Service;
-  public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
-
-  public readonly el: typeof EchonetLite = new EchonetLite({ 'type': 'lan' });
+export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
+  public readonly Service: typeof Service;
+  public readonly Characteristic: typeof Characteristic;
 
   // this is used to track restored cached accessories
-  public readonly accessories: PlatformAccessory[] = [];
+  public readonly accessories: Map<string, PlatformAccessory> = new Map();
+  public readonly discoveredCacheUUIDs: string[] = [];
+
+  // This is only required when using Custom Services and Characteristics not support by HomeKit
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  public readonly CustomServices: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  public readonly CustomCharacteristics: any;
+
+  // EchoNet-Lite specific properties
+  private elSocket: unknown = null;
+  private discoveredDevices: Map<string, AirConditionerDevice> = new Map();
+  private discoveryTimeout: NodeJS.Timeout | null = null;
+  private pendingRequests: Map<string, {
+    resolve: (value: unknown) => void;
+    reject: (reason?: unknown) => void;
+    timestamp: number;
+    ip: string;
+    eoj: string;
+    epc: string;
+  }> = new Map();
+  private requestQueue: Array<() => Promise<void>> = [];
+  private isProcessingQueue = false;
+  private lastRequestTime: Map<string, number> = new Map(); // Track last request time per device
+  
+  // Retry configuration
+  private retryConfig = {
+    maxRetries: 5,
+    baseDelayMs: 500, // Initial delay: 500ms
+    maxDelayMs: 8000, // Maximum delay: 8s
+  };
+  
+  // Polling configuration for external state changes
+  private pollingConfig = {
+    enabled: true,
+    intervalMs: 60000, // Poll every 60 seconds (1 minute) - configurable via config.json
+  };
+  private pollingTimers: Map<string, NodeJS.Timeout> = new Map();
+  
+  // Device state cache for change detection
+  private deviceStateCache: Map<string, Record<string, string>> = new Map();
+  
+  // Log throttling for unmatched responses
+  private lastUnmatchedLogTime: Map<string, number> = new Map();
+  private unmatchedLogInterval = 60000; // Log unmatched responses at most once per minute per device
+  
+  // INF notification tracking
+  private infNotificationCount: Map<string, number> = new Map();
+  private lastInfNotificationTime: Map<string, number> = new Map();
 
   constructor(
-    public readonly log: Logger,
+    public readonly log: Logging,
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {
-    this.el.setLang('ja');
+    this.Service = api.hap.Service;
+    this.Characteristic = api.hap.Characteristic;
+
+    // This is only required when using Custom Services and Characteristics not support by HomeKit
+    this.CustomServices = new EveHomeKitTypes(this.api).Services;
+    this.CustomCharacteristics = new EveHomeKitTypes(this.api).Characteristics;
+
+    // Override retry configuration if provided in config
+    if (this.config.retry) {
+      if (typeof this.config.retry.maxRetries === 'number' && this.config.retry.maxRetries >= 0) {
+        this.retryConfig.maxRetries = this.config.retry.maxRetries;
+      }
+      if (typeof this.config.retry.baseDelayMs === 'number' && this.config.retry.baseDelayMs > 0) {
+        this.retryConfig.baseDelayMs = this.config.retry.baseDelayMs;
+      }
+      if (typeof this.config.retry.maxDelayMs === 'number' && this.config.retry.maxDelayMs > 0) {
+        this.retryConfig.maxDelayMs = this.config.retry.maxDelayMs;
+      }
+    }
+    
+    // Override polling configuration if provided in config
+    if (this.config.polling) {
+      if (typeof this.config.polling.enabled === 'boolean') {
+        this.pollingConfig.enabled = this.config.polling.enabled;
+      }
+      if (typeof this.config.polling.intervalMs === 'number' && this.config.polling.intervalMs > 0) {
+        this.pollingConfig.intervalMs = this.config.polling.intervalMs;
+      }
+    }
+
+    this.log.info(`Polling configuration: enabled=${this.pollingConfig.enabled}, interval=${this.pollingConfig.intervalMs}ms`);
     this.log.debug('Finished initializing platform:', this.config.name);
+    this.log.debug('Retry configuration:', this.retryConfig);
+    this.log.debug('Polling configuration:', this.pollingConfig);
 
     // When this event is fired it means Homebridge has restored all cached accessories from disk.
     // Dynamic Platform plugins should only register new accessories after this event was fired,
@@ -35,99 +126,1659 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
     // to start discovery of new accessories.
     this.api.on('didFinishLaunching', () => {
       log.debug('Executed didFinishLaunching callback');
-      // run the method to discover / register your devices as accessories
-      this.el.init((err: string)=>{
-        if (err) {
-          log.error(err);
-        } else {
-          this.discoverDevices();
-        }
-      });
-      log.info('finish launching version:' + VERSION);
+      // Initialize EchoNet-Lite and start discovery
+      this.initializeEchoNetLite();
     });
   }
 
   /**
    * This function is invoked when homebridge restores cached accessories from disk at startup.
-   * It should be used to setup event handlers for characteristics and update respective values.
+   * It should be used to set up event handlers for characteristics and update respective values.
    */
   configureAccessory(accessory: PlatformAccessory) {
     this.log.info('Loading accessory from cache:', accessory.displayName);
 
-    // add the restored accessory to the accessories cache so we can track if it has already been registered
-    this.accessories.push(accessory);
+    // add the restored accessory to the accessories cache, so we can track if it has already been registered
+    this.accessories.set(accessory.UUID, accessory);
   }
 
   /**
-   * This is an example method showing how to register discovered accessories.
-   * Accessories must only be registered once, previously created accessories
-   * must not be registered again to prevent "duplicate UUID" errors.
+   * Initialize EchoNet-Lite protocol and start device discovery
    */
-  async discoverDevices() {
-    // Start to discover Echonet Lite devices
-    this.el.startDiscovery(async (err, res) => {
-      if(err) {
-        this.log.error(err);
-      } else {
-        const device = res['device'];
-        const address = device['address'];
+  private async initializeEchoNetLite() {
+    try {
+      this.log.info('Initializing EchoNet-Lite protocol...');
+      
+      // We act as a controller
+      const objList = ['05ff01']; // Controller object
+      
+      // Initialize EchoNet-Lite with callback for receiving data
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      this.elSocket = await EL.initialize(objList, (rinfo: any, els: any, err?: unknown) => {
+        if (err) {
+          this.log.error('EchoNet-Lite receive error:', err);
+          return;
+        }
+        
+        this.handleEchoNetLiteMessage(rinfo, els);
+      }, 4, { // IPv4 only
+        ignoreMe: true,
+        autoGetProperties: true,
+        debugMode: false,
+      });
+      
+      this.log.info('EchoNet-Lite initialized successfully');
+      
+      // Start device discovery
+      this.startDiscovery();
+      
+      // Start INF notification monitoring
+      this.startInfNotificationMonitoring();
+      
+    } catch (error) {
+      this.log.error('Failed to initialize EchoNet-Lite:', error);
+    }
+  }
 
-        for (const eoj of device['eoj']) {
-          try {
-            // Add to homebridge only if discovered device is AC
-            const group_code = eoj[0];
-            const class_code = eoj[1];
-            if (group_code === 0x01 && class_code === 0x30) {
-              res = await promisify(this.el.getPropertyValue).bind(this.el)(address, eoj, 0x83);
-              let uuid;
-              if (res['message']['data']) {
-                uuid = this.api.hap.uuid.generate(res['message']['data']['uid']);
-              } else {
-                uuid = this.api.hap.uuid.generate(address);
+  /**
+   * Start discovering EchoNet-Lite devices on the network
+   */
+  private startDiscovery() {
+    this.log.info('Starting EchoNet-Lite device discovery...');
+    
+    // Send search command to discover devices
+    EL.search();
+    
+    // Set timeout for discovery completion
+    this.discoveryTimeout = setTimeout(() => {
+      this.completeDiscovery();
+    }, 10000); // 10 seconds discovery period
+  }
+
+
+  /**
+   * Get additional details about discovered air conditioner
+   */
+  private async getDeviceDetails(device: AirConditionerDevice) {
+    try {
+      // Get manufacturer code (EPC: 0x8A)
+      EL.sendOPC1(device.ip, [0x05, 0xff, 0x01], device.eoj, 0x62, 0x8a, []);
+      
+      // Get product code (EPC: 0x8C) if available
+      EL.sendOPC1(device.ip, [0x05, 0xff, 0x01], device.eoj, 0x62, 0x8c, []);
+      
+      // Get serial number (EPC: 0x8D) if available  
+      EL.sendOPC1(device.ip, [0x05, 0xff, 0x01], device.eoj, 0x62, 0x8d, []);
+      
+    } catch (error) {
+      this.log.debug('Failed to get device details for', device.deviceId, ':', error);
+    }
+  }
+
+  /**
+   * Complete the discovery process and register found devices
+   */
+  private completeDiscovery() {
+    this.log.info(`Discovery completed. Found ${this.discoveredDevices.size} air conditioner(s)`);
+    
+    // Clear discovery timeout
+    if (this.discoveryTimeout) {
+      clearTimeout(this.discoveryTimeout);
+      this.discoveryTimeout = null;
+    }
+    
+    // Register discovered devices as accessories
+    this.registerDiscoveredDevices();
+  }
+
+  /**
+   * Register discovered air conditioners as Homebridge accessories
+   */
+  private registerDiscoveredDevices() {
+    for (const [, device] of this.discoveredDevices) {
+      const uuid = this.api.hap.uuid.generate(device.deviceId);
+      const existingAccessory = this.accessories.get(uuid);
+      
+      if (existingAccessory) {
+        this.log.info('Restoring existing air conditioner from cache:', existingAccessory.displayName);
+        existingAccessory.context.device = device;
+        this.api.updatePlatformAccessories([existingAccessory]);
+        new AirConditionerAccessory(this, existingAccessory);
+        
+        // Initialize existing accessory with actual device state
+        this.initializeDeviceStateFromDevice(device).catch(error => {
+          this.log.warn(`Failed to initialize existing accessory state for ${device.deviceId}:`, error instanceof Error ? error.message : 'unknown error');
+        });
+      } else {
+        const displayName = `Air Conditioner (${device.ip})`;
+        this.log.info('Adding new air conditioner:', displayName);
+        
+        const accessory = new this.api.platformAccessory(displayName, uuid);
+        accessory.context.device = device;
+        
+        new AirConditionerAccessory(this, accessory);
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        
+        // Add to internal accessories map for INF notification handling
+        this.accessories.set(uuid, accessory);
+      }
+      
+      this.discoveredCacheUUIDs.push(uuid);
+      
+      // Initialize device state cache
+      const deviceKey = `${device.ip}_${device.eoj}`;
+      this.deviceStateCache.set(deviceKey, {});
+      this.log.debug(`Initialized state cache for device ${deviceKey}`);
+      
+      // Initialize device with actual state from device (prevent default OFF status)
+      this.initializeDeviceStateFromDevice(device).catch(error => {
+        this.log.warn(`Failed to initialize device state for ${deviceKey}:`, error instanceof Error ? error.message : 'unknown error');
+      });
+      
+      // Setup INF notifications for external operation detection
+      this.setupNotificationProperties(device).catch(error => {
+        this.log.warn(`Failed to setup INF notifications for ${device.deviceId}:`, error instanceof Error ? error.message : 'unknown error');
+      });
+      
+      // Start polling for external state changes (as backup for devices that don't support INF)
+      this.startPollingForDevice(device);
+    }
+    
+    // Remove accessories that are no longer present
+    for (const [uuid, accessory] of this.accessories) {
+      if (!this.discoveredCacheUUIDs.includes(uuid)) {
+        this.log.info('Removing existing accessory from cache:', accessory.displayName);
+        
+        // Stop polling for removed device
+        if (accessory.context.device) {
+          this.stopPollingForDevice(accessory.context.device);
+          
+          // Clean up device state cache
+          const deviceKey = `${accessory.context.device.ip}_${accessory.context.device.eoj}`;
+          this.deviceStateCache.delete(deviceKey);
+          this.log.debug(`Cleaned up state cache for removed device ${deviceKey}`);
+        }
+        
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      }
+    }
+  }
+
+  /**
+   * Process request queue sequentially to avoid overwhelming devices
+   */
+  private async processRequestQueue(): Promise<void> {
+    if (this.isProcessingQueue || this.requestQueue.length === 0) {
+      return;
+    }
+    
+    this.isProcessingQueue = true;
+    
+    while (this.requestQueue.length > 0) {
+      const request = this.requestQueue.shift();
+      if (request) {
+        try {
+          await request();
+          // Add delay between requests to avoid overwhelming the device
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } catch (error) {
+          this.log.error('Request queue processing error:', error);
+        }
+      }
+    }
+    
+    this.isProcessingQueue = false;
+  }
+
+  /**
+   * Send EchoNet-Lite GET request via queue to ensure sequential processing
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async sendEchoNetRequest(ip: string, eoj: string, epc: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      // Add request to queue for sequential processing
+      this.requestQueue.push(async () => {
+        try {
+          const result = await this.sendEchoNetRequestDirect(ip, eoj, epc);
+          resolve(result);
+        } catch (error) {
+          reject(error);
+        }
+      });
+      
+      // Start processing queue if not already running
+      this.processRequestQueue().catch(error => {
+        this.log.error('Queue processing failed:', error);
+      });
+    });
+  }
+
+  /**
+   * Send multiple EPC requests in a single EchoNet-Lite message to reduce TID usage
+   */
+  async sendEchoNetMultiRequest(ip: string, eoj: string, epcs: string[]): Promise<Record<string, string>> {
+    return new Promise((resolve, reject) => {
+      // Add multi-request to queue for sequential processing
+      this.requestQueue.push(async () => {
+        try {
+          const results = await this.sendEchoNetMultiRequestDirect(ip, eoj, epcs);
+          resolve(results);
+        } catch (error) {
+          reject(error);
+        }
+      });
+      
+      // Start processing queue if not already running
+      this.processRequestQueue().catch(error => {
+        this.log.error('Queue processing failed:', error);
+      });
+    });
+  }
+
+  /**
+   * Direct multi-EPC EchoNet-Lite GET request implementation (used by queue)
+   */
+  private async sendEchoNetMultiRequestDirect(ip: string, eoj: string, epcs: string[]): Promise<Record<string, string>> {
+    // Check if we need to throttle requests to this device
+    const deviceKey = `${ip}_${eoj}`;
+    const lastRequest = this.lastRequestTime.get(deviceKey) || 0;
+    const timeSinceLastRequest = Date.now() - lastRequest;
+    
+    if (timeSinceLastRequest < 300) { // Minimum 300ms between requests to same device
+      await new Promise(resolve => setTimeout(resolve, 300 - timeSinceLastRequest));
+    }
+    
+    return new Promise((resolve, reject) => {
+      try {
+        // Create unique request key based on timestamp and device
+        const timestamp = Date.now();
+        const requestKey = `${ip}_${eoj}_multi_${timestamp}`;
+        
+        this.log.debug(`Sending multi-EPC request to ${ip} for EPCs: ${epcs.join(', ')}, key: ${requestKey}`);
+        
+        // Prepare details object for sendDetails
+        const details: Record<string, number[]> = {};
+        epcs.forEach(epc => {
+          details[epc] = []; // Empty array for GET requests
+        });
+        
+        // Store request for matching response
+        const expectedResults: Record<string, string> = {};
+        epcs.forEach(epc => {
+          const epcRequestKey = `${ip}_${eoj}_${epc}_${timestamp}`;
+          this.pendingRequests.set(epcRequestKey, {
+            resolve: (value: unknown) => {
+              expectedResults[epc] = value as string;
+              // Check if all EPCs have been resolved
+              if (Object.keys(expectedResults).length === epcs.length) {
+                resolve(expectedResults);
               }
-              this.addAccessory(device, address, eoj, uuid);
+            },
+            reject,
+            timestamp,
+            ip,
+            eoj,
+            epc,
+          });
+        });
+        
+        // Update last request time
+        this.lastRequestTime.set(deviceKey, timestamp);
+        
+        // Send the actual EchoNet-Lite multi-request using sendDetails
+        EL.sendDetails(ip, [0x05, 0xff, 0x01], eoj, 0x62, details);
+        
+        // Set timeout for request
+        setTimeout(() => {
+          let hasUnresolved = false;
+          epcs.forEach(epc => {
+            const epcRequestKey = `${ip}_${eoj}_${epc}_${timestamp}`;
+            if (this.pendingRequests.has(epcRequestKey)) {
+              this.pendingRequests.delete(epcRequestKey);
+              hasUnresolved = true;
             }
-          } catch (err) {
-            this.log.error(err);
+          });
+          
+          if (hasUnresolved) {
+            const error = new Error(`Timeout waiting for multi-response from ${ip} for EPCs ${epcs.join(', ')}`);
+            this.log.warn(`Multi-request timeout: ${requestKey}`);
+            reject(error);
+          }
+        }, 3000); // 3 second timeout for multi-requests
+        
+      } catch (error) {
+        this.log.error(`Failed to send EchoNet multi-request: ${error}`);
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Direct EchoNet-Lite GET request implementation (used by queue)
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async sendEchoNetRequestDirect(ip: string, eoj: string, epc: string): Promise<any> {
+    // Check if we need to throttle requests to this device
+    const deviceKey = `${ip}_${eoj}`;
+    const lastRequest = this.lastRequestTime.get(deviceKey) || 0;
+    const timeSinceLastRequest = Date.now() - lastRequest;
+    
+    if (timeSinceLastRequest < 300) { // Minimum 300ms between requests to same device
+      await new Promise(resolve => setTimeout(resolve, 300 - timeSinceLastRequest));
+    }
+    
+    return new Promise((resolve, reject) => {
+      try {
+        // Create unique request key based on timestamp and device
+        const timestamp = Date.now();
+        const requestKey = `${ip}_${eoj}_${epc}_${timestamp}`;
+        
+        this.log.debug(`Sending EPC ${epc} to ${ip}, key: ${requestKey}`);
+        
+        // Store request for matching response
+        this.pendingRequests.set(requestKey, {
+          resolve,
+          reject,
+          timestamp,
+          ip,
+          eoj,
+          epc,
+        });
+        
+        // Update last request time
+        this.lastRequestTime.set(deviceKey, timestamp);
+        
+        // Send the actual EchoNet-Lite request
+        EL.sendOPC1(ip, [0x05, 0xff, 0x01], eoj, 0x62, epc, []);
+        
+        // Set timeout for request (shorter for Homebridge compatibility)
+        setTimeout(() => {
+          if (this.pendingRequests.has(requestKey)) {
+            this.pendingRequests.delete(requestKey);
+            const error = new Error(`Timeout waiting for response from ${ip} for EPC ${epc}`);
+            this.log.warn(`Request timeout: ${requestKey}`);
+            reject(error);
+          }
+        }, 2000); // 2 second timeout
+        
+      } catch (error) {
+        this.log.error(`Failed to send EchoNet request: ${error}`);
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Send EchoNet-Lite SET request via queue to ensure sequential processing
+   */
+  async sendEchoNetSetRequest(ip: string, eoj: string, epc: string, data: number[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // Add SET request to queue for sequential processing
+      this.requestQueue.push(async () => {
+        try {
+          await this.sendEchoNetSetRequestDirect(ip, eoj, epc, data);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+      
+      // Start processing queue if not already running
+      this.processRequestQueue().catch(error => {
+        this.log.error('Queue processing failed:', error);
+      });
+    });
+  }
+
+  /**
+   * Direct EchoNet-Lite SET request implementation (used by queue)
+   */
+  private async sendEchoNetSetRequestDirect(ip: string, eoj: string, epc: string, data: number[]): Promise<void> {
+    // Check if we need to throttle requests to this device
+    const deviceKey = `${ip}_${eoj}`;
+    const lastRequest = this.lastRequestTime.get(deviceKey) || 0;
+    const timeSinceLastRequest = Date.now() - lastRequest;
+    
+    if (timeSinceLastRequest < 300) { // Minimum 300ms between requests to same device
+      await new Promise(resolve => setTimeout(resolve, 300 - timeSinceLastRequest));
+    }
+    
+    return new Promise((resolve, reject) => {
+      try {
+        // Create unique request key based on timestamp and device
+        const timestamp = Date.now();
+        const requestKey = `${ip}_${eoj}_${epc}_set_${timestamp}`;
+        
+        this.log.debug(`Sending SET EPC ${epc} to ${ip} with data: [${data.join(', ')}], key: ${requestKey}`);
+        
+        // Store request for matching response
+        this.pendingRequests.set(requestKey, {
+          resolve: () => resolve(),
+          reject,
+          timestamp,
+          ip,
+          eoj,
+          epc,
+        });
+        
+        // Update last request time
+        this.lastRequestTime.set(deviceKey, timestamp);
+        
+        // Send the actual EchoNet-Lite SET request (0x61 = SETI)
+        EL.sendOPC1(ip, [0x05, 0xff, 0x01], eoj, 0x61, epc, data);
+        
+        // Set timeout for request
+        setTimeout(() => {
+          if (this.pendingRequests.has(requestKey)) {
+            this.pendingRequests.delete(requestKey);
+            const error = new Error(`Timeout waiting for SET response from ${ip} for EPC ${epc}`);
+            this.log.warn(`SET request timeout: ${requestKey}`);
+            reject(error);
+          }
+        }, 3000); // 3 second timeout for SET requests
+        
+      } catch (error) {
+        this.log.error(`Failed to send EchoNet SET request: ${error}`);
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Enhanced message handler that processes responses for pending requests
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleEchoNetLiteMessage(rinfo: any, els: any) {
+    // Only log detailed message info at trace level to reduce noise
+    if (this.log.debug && process.env.HOMEBRIDGE_DEBUG) {
+      this.log.debug('Received EchoNet-Lite message from', rinfo.address, ':', els);
+    }
+    
+    // Track unmatched responses to detect potential issues
+    let hasMatchedRequests = false;
+    
+    // Check if this is a response to a pending request
+    if ((els.ESV === '72' || els.ESV === '71') && els.DETAILs) { // GET_RES or SET_RES
+      const responseType = els.ESV === '72' ? 'GET_RES' : 'SET_RES';
+      
+      for (const [epc, value] of Object.entries(els.DETAILs)) {
+        // Find the most recent pending request for this device/EPC combination
+        let mostRecentRequest = null;
+        let mostRecentKey = null;
+        let mostRecentTime = 0;
+        
+        for (const [key, request] of this.pendingRequests.entries()) {
+          if (request.ip === rinfo.address && 
+              request.eoj === els.SEOJ && 
+              request.epc === epc &&
+              request.timestamp > mostRecentTime) {
+            mostRecentRequest = request;
+            mostRecentKey = key;
+            mostRecentTime = request.timestamp;
+          }
+        }
+        
+        if (mostRecentRequest && mostRecentKey) {
+          hasMatchedRequests = true;
+          this.log.debug(`Resolved ${responseType} for ${rinfo.address} EPC ${epc}: ${value}`);
+          this.pendingRequests.delete(mostRecentKey);
+          // For GET_RES, pass the value; for SET_RES, just resolve (void)
+          if (els.ESV === '72') {
+            mostRecentRequest.resolve(value);
+          } else {
+            mostRecentRequest.resolve(undefined);
           }
         }
       }
-    });
-
-    setTimeout(()=>{
-      this.el.stopDiscovery();
-    }, 60 * 1000);
+      
+      // Only log unmatched responses occasionally to avoid spam
+      if (!hasMatchedRequests && this.shouldLogUnmatchedResponse(rinfo.address)) {
+        const epcCount = Object.keys(els.DETAILs || {}).length;
+        this.log.debug(`Received unmatched ${responseType} from ${rinfo.address} (${epcCount} EPCs, ${this.pendingRequests.size} pending)`);
+      }
+    }
+    
+    // Handle INF notifications (external operations)
+    if (els.ESV === '73' && els.DETAILs && els.SEOJ && els.SEOJ.startsWith('0130')) {
+      // Track INF notification reception
+      const deviceKey = `${rinfo.address}_${els.SEOJ}`;
+      const currentCount = this.infNotificationCount.get(deviceKey) || 0;
+      this.infNotificationCount.set(deviceKey, currentCount + 1);
+      this.lastInfNotificationTime.set(deviceKey, Date.now());
+      
+      // INF from air conditioner - Enhanced logging for debugging
+      this.log.debug(`Received INF notification #${currentCount + 1} from ${rinfo.address} (${els.SEOJ}): EPCs ${Object.keys(els.DETAILs).join(', ')}`);
+      
+      // Update state cache with INF notification data
+      const currentState = this.deviceStateCache.get(deviceKey) || {};
+      const changes: Record<string, string> = {};
+      
+      for (const [epc, value] of Object.entries(els.DETAILs)) {
+        const stringValue = value as string;
+        this.log.debug(`  EPC ${epc}: ${currentState[epc]} -> ${stringValue}`);
+        if (currentState[epc] !== stringValue) {
+          changes[epc] = stringValue;
+        }
+        currentState[epc] = stringValue;
+      }
+      this.deviceStateCache.set(deviceKey, currentState);
+      
+      // Process all INF notifications, even if no changes detected
+      if (Object.keys(changes).length > 0) {
+        this.log.info(`🔔 External operation detected on ${rinfo.address}: ${Object.keys(changes).join(', ')} changed`);
+        this.handleDeviceStateChange(rinfo.address, els.SEOJ, changes);
+      } else {
+        this.log.debug(`INF notification received but no state changes detected for ${rinfo.address}`);
+      }
+    }
+    
+    // Original discovery logic for air conditioners
+    if (els.SEOJ && els.SEOJ.startsWith('0130')) {
+      const deviceId = `${rinfo.address}_${els.SEOJ}`;
+      
+      if (!this.discoveredDevices.has(deviceId)) {
+        const device: AirConditionerDevice = {
+          ip: rinfo.address,
+          eoj: els.SEOJ,
+          deviceId: deviceId,
+        };
+        
+        this.discoveredDevices.set(deviceId, device);
+        this.log.info(`Discovered air conditioner at ${rinfo.address} (${els.SEOJ})`);
+        
+        // Try to get additional device information
+        this.getDeviceDetails(device);
+      }
+    }
   }
 
-  addAccessory(device, address, eoj, uuid){
-    const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
+  /**
+   * Check if error is retryable (timeout errors only)
+   */
+  private isRetryableError(error: unknown): boolean {
+    if (error instanceof Error) {
+      return error.message.includes('Timeout waiting for response') ||
+             error.message.includes('Quick timeout');
+    }
+    return false;
+  }
 
-    if (existingAccessory) {
-      // the accessory already exists
-      this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
-      // create the accessory handler for the restored accessory
-      // this is imported from `platformAccessory.ts`
-      new EoliaPlatformAccessory(this, existingAccessory);
+  /**
+   * Calculate delay for exponential backoff
+   */
+  private calculateBackoffDelay(attempt: number): number {
+    const delay = this.retryConfig.baseDelayMs * Math.pow(2, attempt);
+    return Math.min(delay, this.retryConfig.maxDelayMs);
+  }
+
+  /**
+   * Generic method to get metric value from EchoNet-Lite device with retry
+   */
+  private async getMetricValue<T>(
+    device: AirConditionerDevice,
+    epc: string,
+    metricName: string,
+    parser: (response: string) => T,
+  ): Promise<T> {
+    let lastError: unknown;
+    
+    for (let attempt = 0; attempt <= this.retryConfig.maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = this.calculateBackoffDelay(attempt - 1);
+          this.log.debug(`Retrying ${metricName} for ${device.ip}, attempt ${attempt}/${this.retryConfig.maxRetries}, delay: ${delay}ms`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        
+        const response = await this.sendEchoNetRequest(device.ip, device.eoj, epc);
+        
+        if (attempt > 0) {
+          this.log.info(`Successfully retrieved ${metricName} for ${device.ip} after ${attempt} retries`);
+        }
+        
+        return parser(response);
+        
+      } catch (error) {
+        lastError = error;
+        
+        // Only retry for timeout errors
+        if (!this.isRetryableError(error)) {
+          this.log.error(`Non-retryable error getting ${metricName} for ${device.ip}:`, error);
+          throw error;
+        }
+        
+        if (attempt === this.retryConfig.maxRetries) {
+          this.log.error(`Failed to get ${metricName} for ${device.ip} after ${this.retryConfig.maxRetries} retries:`, error);
+          break;
+        }
+        
+        this.log.warn(`Timeout getting ${metricName} for ${device.ip}, attempt ${attempt + 1}/${this.retryConfig.maxRetries + 1}`);
+      }
+    }
+    
+    throw lastError;
+  }
+
+  /**
+   * Generic method to set metric value on EchoNet-Lite device with retry
+   */
+  private async setMetricValue<T>(
+    device: AirConditionerDevice,
+    epc: string,
+    metricName: string,
+    value: T,
+    dataConverter: (value: T) => number[],
+  ): Promise<void> {
+    let lastError: unknown;
+    const data = dataConverter(value);
+    
+    for (let attempt = 0; attempt <= this.retryConfig.maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = this.calculateBackoffDelay(attempt - 1);
+          this.log.debug(`Retrying set ${metricName} for ${device.ip}, attempt ${attempt}/${this.retryConfig.maxRetries}, delay: ${delay}ms`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        
+        await this.sendEchoNetSetRequest(device.ip, device.eoj, epc, data);
+        
+        if (attempt > 0) {
+          this.log.info(`Successfully set ${metricName} to ${value} for ${device.ip} after ${attempt} retries`);
+        } else {
+          this.log.debug(`Successfully set ${metricName} to ${value} for ${device.ip}`);
+        }
+        
+        return; // Success
+        
+      } catch (error) {
+        lastError = error;
+        
+        // Only retry for timeout errors
+        if (!this.isRetryableError(error)) {
+          this.log.error(`Non-retryable error setting ${metricName} for ${device.ip}:`, error);
+          throw error;
+        }
+        
+        if (attempt === this.retryConfig.maxRetries) {
+          this.log.error(`Failed to set ${metricName} for ${device.ip} after ${this.retryConfig.maxRetries} retries:`, error);
+          break;
+        }
+        
+        this.log.warn(`Timeout setting ${metricName} for ${device.ip}, attempt ${attempt + 1}/${this.retryConfig.maxRetries + 1}`);
+      }
+    }
+    
+    throw lastError;
+  }
+
+  /**
+   * Get operation state (ON/OFF)
+   * EPC: 0x80 - Operation Status
+   * 0x30 = ON, 0x31 = OFF
+   */
+  async getOperationState(device: AirConditionerDevice): Promise<boolean> {
+    return this.getMetricValue(
+      device,
+      '80',
+      'operation state',
+      (response) => response === '30', // 0x30 = ON
+    );
+  }
+
+  /**
+   * Get current room temperature
+   * EPC: 0xBB - Room Temperature
+   */
+  async getCurrentTemperature(device: AirConditionerDevice): Promise<number> {
+    return this.getMetricValue(
+      device,
+      'bb',
+      'current temperature',
+      (response) => {
+        // Response is in hex, convert to decimal (temperature in °C)
+        const temp = parseInt(response, 16);
+        return temp > 125 ? (temp - 256) : temp; // Handle negative temperatures
+      },
+    );
+  }
+
+  /**
+   * Get target temperature
+   * EPC: 0xB3 - Temperature Setting
+   */
+  async getTargetTemperature(device: AirConditionerDevice): Promise<number> {
+    return this.getMetricValue(
+      device,
+      'b3',
+      'target temperature',
+      (response) => parseInt(response, 16), // Response is in hex, convert to decimal
+    );
+  }
+
+  /**
+   * Get operation mode
+   * EPC: 0xB0 - Operation Mode Setting
+   * 0x41=Auto, 0x42=Cool, 0x43=Heat, 0x44=Dry, 0x45=Fan
+   */
+  async getOperationMode(device: AirConditionerDevice): Promise<number> {
+    return this.getMetricValue(
+      device,
+      'b0',
+      'operation mode',
+      (response) => {
+        const mode = parseInt(response, 16);
+        
+        // Convert EchoNet-Lite mode to HomeKit mode
+        switch (mode) {
+        case 0x41: return 3; // Auto -> HomeKit Auto
+        case 0x42: return 2; // Cool -> HomeKit Cool
+        case 0x43: return 1; // Heat -> HomeKit Heat
+        case 0x44: return 2; // Dry -> HomeKit Cool (closest match)
+        case 0x45: return 2; // Fan -> HomeKit Cool (closest match)
+        default: return 0;   // Unknown -> HomeKit Off
+        }
+      },
+    );
+  }
+
+  /**
+   * Set operation state (ON/OFF)
+   * EPC: 0x80 - Operation Status
+   * 0x30 = ON, 0x31 = OFF
+   */
+  async setOperationState(device: AirConditionerDevice, isOn: boolean): Promise<void> {
+    await this.setMetricValue(
+      device,
+      '80',
+      'operation state',
+      isOn,
+      (state) => [state ? 0x30 : 0x31], // 0x30 = ON, 0x31 = OFF
+    );
+    
+    // Update local cache immediately after successful SET operation
+    this.updateDeviceStateCache(device, '80', isOn ? '30' : '31');
+    
+    // Also update HomeKit characteristics immediately to provide instant feedback
+    this.updateHomeKitCharacteristicsAfterSet(device, '80', isOn ? '30' : '31');
+  }
+
+  /**
+   * Set target temperature
+   * EPC: 0xB3 - Temperature Setting
+   */
+  async setTargetTemperature(device: AirConditionerDevice, temperature: number): Promise<void> {
+    await this.setMetricValue(
+      device,
+      'b3',
+      'target temperature',
+      temperature,
+      (temp) => [Math.round(temp)], // Temperature in °C as single byte
+    );
+    
+    // Update local cache immediately after successful SET operation
+    const hexValue = Math.round(temperature).toString(16);
+    this.updateDeviceStateCache(device, 'b3', hexValue);
+    
+    // Also update HomeKit characteristics immediately to provide instant feedback
+    this.updateHomeKitCharacteristicsAfterSet(device, 'b3', hexValue);
+  }
+
+  /**
+   * Set operation mode
+   * EPC: 0xB0 - Operation Mode Setting
+   * HomeKit: 0=OFF, 1=HEAT, 2=COOL, 3=AUTO
+   * EchoNet-Lite: 0x41=Auto, 0x42=Cool, 0x43=Heat, 0x44=Dry, 0x45=Fan
+   */
+  async setOperationMode(device: AirConditionerDevice, mode: number): Promise<void> {
+    let echoNetMode: number;
+    
+    // Convert HomeKit mode to EchoNet-Lite mode
+    switch (mode) {
+    case 1: echoNetMode = 0x43; break; // Heat
+    case 2: echoNetMode = 0x42; break; // Cool  
+    case 3: echoNetMode = 0x41; break; // Auto
+    default: echoNetMode = 0x42; break; // Default to Cool for unknown modes
+    }
+    
+    await this.setMetricValue(
+      device,
+      'b0',
+      'operation mode',
+      mode,
+      () => [echoNetMode],
+    );
+    
+    // Update local cache immediately after successful SET operation
+    const hexValue = echoNetMode.toString(16);
+    this.updateDeviceStateCache(device, 'b0', hexValue);
+    
+    // Also update HomeKit characteristics immediately to provide instant feedback
+    this.updateHomeKitCharacteristicsAfterSet(device, 'b0', hexValue);
+  }
+
+  /**
+   * Check if we should log unmatched response to prevent spam
+   */
+  private shouldLogUnmatchedResponse(deviceAddress: string): boolean {
+    const now = Date.now();
+    const lastLog = this.lastUnmatchedLogTime.get(deviceAddress) || 0;
+    
+    if (now - lastLog > this.unmatchedLogInterval) {
+      this.lastUnmatchedLogTime.set(deviceAddress, now);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get device state cache for accessory use (to avoid duplicate requests)
+   */
+  getDeviceStateCache(deviceKey: string): Record<string, string> | undefined {
+    return this.deviceStateCache.get(deviceKey);
+  }
+
+  /**
+   * Update device state cache for specific device and EPC
+   */
+  private updateDeviceStateCache(device: AirConditionerDevice, epc: string, value: string): void {
+    const deviceKey = `${device.ip}_${device.eoj}`;
+    const currentState = this.deviceStateCache.get(deviceKey) || {};
+    currentState[epc] = value;
+    this.deviceStateCache.set(deviceKey, currentState);
+    // Only log cache updates in debug mode
+    if (process.env.HOMEBRIDGE_DEBUG) {
+      this.log.debug(`Updated cache for ${deviceKey} EPC ${epc}: ${value}`);
+    }
+  }
+
+  /**
+   * Update HomeKit characteristics immediately after SET operation
+   */
+  private updateHomeKitCharacteristicsAfterSet(device: AirConditionerDevice, epc: string, value: string): void {
+    const deviceId = `${device.ip}_${device.eoj}`;
+    
+    // Find the corresponding accessory
+    let targetAccessory = null;
+    for (const [, accessory] of this.accessories) {
+      if (accessory.context.device?.deviceId === deviceId) {
+        targetAccessory = accessory;
+        break;
+      }
+    }
+    
+    if (!targetAccessory) {
+      this.log.debug(`No accessory found for device ${deviceId} during SET update`);
+      return;
+    }
+
+    // Create a single property change object for this specific operation
+    const changes: Record<string, string> = {};
+    changes[epc] = value;
+    
+    this.log.info(`Immediate HomeKit update after SET operation for ${deviceId} EPC ${epc}: ${value}`);
+    this.updateAccessoryCharacteristics(targetAccessory, changes);
+  }
+
+  /**
+   * Handle device state change from external operations (INF notifications or polling)
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleDeviceStateChange(ip: string, eoj: string, details: any): void {
+    this.log.info(`External state change detected for ${ip}/${eoj}:`, details);
+    
+    const deviceId = `${ip}_${eoj}`;
+    
+    // Debug: List all registered accessories
+    this.log.debug(`Looking for accessory with deviceId: ${deviceId}`);
+    this.log.debug(`Currently registered accessories (${this.accessories.size}):`);
+    for (const [uuid, accessory] of this.accessories) {
+      const contextDevice = accessory.context.device;
+      this.log.debug(`  UUID: ${uuid}, DeviceId: ${contextDevice?.deviceId}, IP: ${contextDevice?.ip}, EOJ: ${contextDevice?.eoj}`);
+    }
+    
+    // Find the corresponding accessory
+    let targetAccessory = null;
+    for (const [, accessory] of this.accessories) {
+      if (accessory.context.device?.deviceId === deviceId) {
+        targetAccessory = accessory;
+        break;
+      }
+    }
+    
+    if (!targetAccessory) {
+      this.log.warn(`No accessory found for device ${deviceId}`);
+      
+      // Try alternative matching methods
+      this.log.debug('Trying alternative matching methods...');
+      for (const [uuid, accessory] of this.accessories) {
+        const contextDevice = accessory.context.device;
+        if (contextDevice?.ip === ip && contextDevice?.eoj === eoj) {
+          this.log.info(`Found accessory using IP+EOJ matching: ${uuid}`);
+          targetAccessory = accessory;
+          break;
+        }
+        if (contextDevice?.ip === ip) {
+          this.log.info(`Found accessory using IP-only matching: ${uuid} (EOJ mismatch: ${contextDevice?.eoj} vs ${eoj})`);
+          targetAccessory = accessory;
+          break;
+        }
+      }
+      
+      if (!targetAccessory) {
+        this.log.error(`Still no accessory found for ${deviceId} after alternative matching`);
+        return;
+      }
+    }
+    
+    // Update HomeKit characteristics based on changed properties
+    this.updateAccessoryCharacteristics(targetAccessory, details);
+  }
+
+  /**
+   * Update HomeKit characteristics when device state changes
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private updateAccessoryCharacteristics(accessory: PlatformAccessory, details: any): void {
+    const service = accessory.getService(this.Service.Thermostat);
+    if (!service) {
+      this.log.warn(`No Thermostat service found for accessory ${accessory.displayName}`);
+      return;
+    }
+
+    this.log.info(`🔄 Updating HomeKit characteristics for ${accessory.displayName}`);
+
+    // Process each changed property with enhanced reliability
+    const updates: Array<() => void> = [];
+    
+    for (const [epc, value] of Object.entries(details)) {
+      this.log.debug(`  Processing EPC ${epc}: ${value}`);
+      
+      switch (epc.toLowerCase()) {
+      case '80': // Operation Status
+        updates.push(() => this.updateOperationStatus(service, value as string));
+        break;
+      case 'b0': // Operation Mode
+        updates.push(() => this.updateOperationMode(service, value as string));
+        break;
+      case 'b3': // Target Temperature
+        updates.push(() => this.updateTargetTemperature(service, value as string));
+        break;
+      case 'bb': // Current Temperature
+        updates.push(() => this.updateCurrentTemperature(service, value as string));
+        break;
+      default:
+        this.log.debug(`Unhandled EPC ${epc} with value ${value}`);
+      }
+    }
+
+    // Execute all updates with proper timing
+    updates.forEach((update, index) => {
+      setTimeout(() => {
+        try {
+          update();
+        } catch (error) {
+          this.log.error(`Failed to update characteristic ${index}:`, error);
+        }
+      }, index * 50); // 50ms intervals between updates
+    });
+
+    // Schedule a verification after all updates
+    setTimeout(() => {
+      this.verifyHomeKitSync(accessory, details);
+    }, updates.length * 50 + 100);
+
+    this.log.info(`✅ HomeKit characteristic updates scheduled for ${accessory.displayName}`);
+  }
+
+  /**
+   * Update operation status characteristics
+   */
+  private updateOperationStatus(service: Service, value: string): void {
+    if (!this.isValidEchoNetValue(value, '80')) {
+      this.log.warn(`Invalid operation status value: 0x${value}, skipping update`);
+      return;
+    }
+    
+    const isOn = value === '30'; // 0x30 = ON
+    this.log.info(`External operation status change: ${isOn ? 'ON' : 'OFF'}`);
+    
+    // Update both current and target heating cooling state (external change notification)
+    const state = isOn ? 2 : 0; // Default to cooling when ON, OFF when not
+    
+    this.log.debug(`📱 Updating HomeKit operation status: CurrentState=${state}, TargetState=${state}`);
+    
+    // Multiple update attempts for reliability
+    const currentChar = service.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState);
+    const targetChar = service.getCharacteristic(this.Characteristic.TargetHeatingCoolingState);
+    
+    // Primary update
+    currentChar.updateValue(state);
+    targetChar.updateValue(state);
+    
+    // Backup update after short delay
+    setTimeout(() => {
+      currentChar.updateValue(state);
+      targetChar.updateValue(state);
+      this.log.debug(`📱 Backup HomeKit operation status update: ${state}`);
+    }, 200);
+    
+    // Final fallback update
+    setTimeout(() => {
+      if (currentChar.value !== state || targetChar.value !== state) {
+        currentChar.updateValue(state);
+        targetChar.updateValue(state);
+        this.log.warn(`📱 Fallback HomeKit operation status update triggered: ${state}`);
+      }
+    }, 1000);
+  }
+
+  /**
+   * Update operation mode characteristics
+   */
+  private updateOperationMode(service: Service, value: string): void {
+    if (!this.isValidEchoNetValue(value, 'b0')) {
+      this.log.warn(`Invalid operation mode value: 0x${value}, skipping update`);
+      return;
+    }
+    
+    const mode = parseInt(value, 16);
+    let homeKitMode = 0; // Default to OFF
+    
+    // Convert EchoNet-Lite mode to HomeKit mode
+    switch (mode) {
+    case 0x41: homeKitMode = 3; break; // Auto
+    case 0x42: homeKitMode = 2; break; // Cool
+    case 0x43: homeKitMode = 1; break; // Heat
+    case 0x44: homeKitMode = 2; break; // Dry -> Cool
+    case 0x45: homeKitMode = 2; break; // Fan -> Cool
+    }
+    
+    this.log.info(`External operation mode change: ${homeKitMode} (EchoNet: 0x${mode.toString(16)})`);
+    
+    this.log.debug(`📱 Updating HomeKit operation mode: CurrentState=${homeKitMode}, TargetState=${homeKitMode}`);
+    
+    // Multiple update attempts for operation mode
+    const currentChar = service.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState);
+    const targetChar = service.getCharacteristic(this.Characteristic.TargetHeatingCoolingState);
+    
+    // Primary update
+    currentChar.updateValue(homeKitMode);
+    targetChar.updateValue(homeKitMode);
+    
+    // Backup update
+    setTimeout(() => {
+      currentChar.updateValue(homeKitMode);
+      targetChar.updateValue(homeKitMode);
+      this.log.debug(`📱 Backup HomeKit operation mode update: ${homeKitMode}`);
+    }, 200);
+    
+    // Fallback verification
+    setTimeout(() => {
+      if (currentChar.value !== homeKitMode || targetChar.value !== homeKitMode) {
+        currentChar.updateValue(homeKitMode);
+        targetChar.updateValue(homeKitMode);
+        this.log.warn(`📱 Fallback HomeKit operation mode update triggered: ${homeKitMode}`);
+      }
+    }, 1000);
+  }
+
+  /**
+   * Validate EchoNet-Lite data value
+   */
+  private isValidEchoNetValue(value: string, epc: string): boolean {
+    const hexValue = parseInt(value, 16);
+    
+    // Check for EchoNet-Lite special values
+    if (hexValue === 0xFD) {
+      this.log.debug(`EPC ${epc}: Property value not set (0xFD)`);
+      return false;
+    }
+    if (hexValue === 0xFE) {
+      this.log.debug(`EPC ${epc}: Property value out of range (0xFE)`);
+      return false;
+    }
+    if (hexValue === 0xFF) {
+      this.log.debug(`EPC ${epc}: Property value undefined (0xFF)`);
+      return false;
+    }
+    
+    // EPC-specific validation
+    switch (epc.toLowerCase()) {
+    case 'b3': // Target temperature
+      return hexValue >= 0 && hexValue <= 50; // Reasonable temperature range
+    case 'bb': // Current temperature  
+      return hexValue >= 0 && hexValue <= 125; // EchoNet-Lite temperature range
+    case '80': // Operation status
+      return hexValue === 0x30 || hexValue === 0x31; // ON or OFF only
+    case 'b0': // Operation mode
+      return [0x41, 0x42, 0x43, 0x44, 0x45].includes(hexValue); // Valid modes only
+    default:
+      return true; // Allow other EPCs
+    }
+  }
+
+  /**
+   * Clamp value to HomeKit valid range
+   */
+  private clampToHomeKitRange(value: number, characteristic: string): number {
+    switch (characteristic) {
+    case 'TargetTemperature':
+      return Math.max(10, Math.min(38, value)); // HomeKit range: 10-38°C
+    case 'CurrentTemperature':
+      return Math.max(-270, Math.min(100, value)); // HomeKit range: -270-100°C
+    default:
+      return value;
+    }
+  }
+
+  /**
+   * Update target temperature characteristic
+   */
+  private updateTargetTemperature(service: Service, value: string): void {
+    if (!this.isValidEchoNetValue(value, 'b3')) {
+      this.log.warn(`Invalid target temperature value: 0x${value}, skipping update`);
+      return;
+    }
+    
+    const rawTemperature = parseInt(value, 16);
+    const temperature = this.clampToHomeKitRange(rawTemperature, 'TargetTemperature');
+    
+    if (temperature !== rawTemperature) {
+      this.log.warn(`Target temperature ${rawTemperature}°C clamped to ${temperature}°C (HomeKit range: 10-38°C)`);
+    }
+    
+    this.log.info(`External target temperature change: ${temperature}°C`);
+    
+    this.log.debug(`📱 Updating HomeKit target temperature: ${temperature}°C`);
+    
+    const targetTempChar = service.getCharacteristic(this.Characteristic.TargetTemperature);
+    
+    // Primary update
+    targetTempChar.updateValue(temperature);
+    
+    // Backup update
+    setTimeout(() => {
+      targetTempChar.updateValue(temperature);
+      this.log.debug(`📱 Backup HomeKit target temperature update: ${temperature}°C`);
+    }, 200);
+    
+    // Fallback verification
+    setTimeout(() => {
+      if (Math.abs((targetTempChar.value as number) - temperature) > 0.5) {
+        targetTempChar.updateValue(temperature);
+        this.log.warn(`📱 Fallback HomeKit target temperature update triggered: ${temperature}°C`);
+      }
+    }, 1000);
+  }
+
+  /**
+   * Update current temperature characteristic
+   */
+  private updateCurrentTemperature(service: Service, value: string): void {
+    if (!this.isValidEchoNetValue(value, 'bb')) {
+      this.log.warn(`Invalid current temperature value: 0x${value}, skipping update`);
+      return;
+    }
+    
+    const temp = parseInt(value, 16);
+    const rawTemperature = temp > 125 ? (temp - 256) : temp; // Handle negative temperatures
+    const temperature = this.clampToHomeKitRange(rawTemperature, 'CurrentTemperature');
+    
+    if (temperature !== rawTemperature) {
+      this.log.warn(`Current temperature ${rawTemperature}°C clamped to ${temperature}°C (HomeKit range: -270-100°C)`);
+    }
+    
+    this.log.info(`External current temperature change: ${temperature}°C`);
+    
+    this.log.debug(`📱 Updating HomeKit current temperature: ${temperature}°C`);
+    
+    const currentTempChar = service.getCharacteristic(this.Characteristic.CurrentTemperature);
+    
+    // Primary update
+    currentTempChar.updateValue(temperature);
+    
+    // Backup update
+    setTimeout(() => {
+      currentTempChar.updateValue(temperature);
+      this.log.debug(`📱 Backup HomeKit current temperature update: ${temperature}°C`);
+    }, 200);
+    
+    // Fallback verification
+    setTimeout(() => {
+      if (Math.abs((currentTempChar.value as number) - temperature) > 0.5) {
+        currentTempChar.updateValue(temperature);
+        this.log.warn(`📱 Fallback HomeKit current temperature update triggered: ${temperature}°C`);
+      }
+    }, 1000);
+  }
+
+  /**
+   * Initialize device state from actual device to prevent showing default OFF status
+   */
+  private async initializeDeviceStateFromDevice(device: AirConditionerDevice): Promise<void> {
+    this.log.info(`Initializing actual device state for ${device.ip}...`);
+    
+    try {
+      // Use multi-request to get all initial states efficiently
+      const stateProperties = ['80', 'b0', 'b3', 'bb']; // Operation status, mode, target temp, current temp
+      const results = await this.sendEchoNetMultiRequest(device.ip, device.eoj, stateProperties);
+      
+      // Update cache with initial values
+      const deviceKey = `${device.ip}_${device.eoj}`;
+      const currentState = this.deviceStateCache.get(deviceKey) || {};
+      
+      for (const [epc, value] of Object.entries(results)) {
+        if (this.isValidEchoNetValue(value, epc)) {
+          currentState[epc] = value;
+        }
+      }
+      
+      this.deviceStateCache.set(deviceKey, currentState);
+      
+      // Immediately update HomeKit characteristics with actual device state
+      if (Object.keys(currentState).length > 0) {
+        this.log.info(`Initialized ${device.ip} with actual state: ${Object.keys(currentState).join(', ')}`);
+        this.handleDeviceStateChange(device.ip, device.eoj, currentState);
+      }
+      
+    } catch (error) {
+      // If multi-request fails, try individual requests as fallback
+      this.log.debug(`Multi-request initialization failed for ${device.ip}, trying individual requests`);
+      await this.initializeDeviceStateIndividually(device);
+    }
+  }
+
+  /**
+   * Fallback initialization using individual requests
+   */
+  private async initializeDeviceStateIndividually(device: AirConditionerDevice): Promise<void> {
+    const stateProperties = ['80', 'b0', 'b3', 'bb'];
+    const deviceKey = `${device.ip}_${device.eoj}`;
+    const currentState = this.deviceStateCache.get(deviceKey) || {};
+    let initializedCount = 0;
+
+    for (const epc of stateProperties) {
+      try {
+        const value = await this.sendEchoNetRequest(device.ip, device.eoj, epc);
+        
+        if (this.isValidEchoNetValue(value, epc)) {
+          currentState[epc] = value;
+          initializedCount++;
+        }
+        
+        // Small delay between requests to avoid overwhelming device
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+      } catch (error) {
+        this.log.debug(`Failed to initialize EPC ${epc} for ${device.ip}:`, error instanceof Error ? error.message : 'unknown error');
+      }
+    }
+
+    if (initializedCount > 0) {
+      this.deviceStateCache.set(deviceKey, currentState);
+      this.log.info(`Individually initialized ${device.ip} with ${initializedCount} properties`);
+      this.handleDeviceStateChange(device.ip, device.eoj, currentState);
+    }
+  }
+
+  /**
+   * Start polling for external state changes
+   */
+  private startPollingForDevice(device: AirConditionerDevice): void {
+    if (!this.pollingConfig.enabled) {
+      return;
+    }
+
+    const deviceKey = `${device.ip}_${device.eoj}`;
+    
+    // Clear existing timer if any
+    const existingTimer = this.pollingTimers.get(deviceKey);
+    if (existingTimer) {
+      clearInterval(existingTimer);
+    }
+
+    // Start new polling timer
+    const timer = setInterval(async () => {
+      try {
+        await this.pollDeviceState(device);
+      } catch (error) {
+        this.log.debug(`Polling error for ${device.ip}:`, error);
+      }
+    }, this.pollingConfig.intervalMs);
+
+    this.pollingTimers.set(deviceKey, timer);
+    this.log.debug(`Started polling for device ${deviceKey} every ${this.pollingConfig.intervalMs}ms`);
+  }
+
+  /**
+   * Poll device state and detect changes using queue-based requests
+   */
+  private async pollDeviceState(device: AirConditionerDevice): Promise<void> {
+    return new Promise((resolve) => {
+      // Add polling operation to request queue for sequential processing
+      this.requestQueue.push(async () => {
+        try {
+          await this.pollDeviceStateSequential(device);
+        } catch (error) {
+          this.log.debug(`Polling error for ${device.ip}:`, error);
+        } finally {
+          resolve();
+        }
+      });
+      
+      // Start processing queue if not already running
+      this.processRequestQueue().catch(error => {
+        this.log.error('Queue processing failed during polling:', error);
+      });
+    });
+  }
+
+  /**
+   * Sequential polling implementation using multi-EPC requests to reduce TID usage
+   */
+  private async pollDeviceStateSequential(device: AirConditionerDevice): Promise<void> {
+    const stateProperties = ['80', 'b0', 'b3', 'bb']; // Operation status, mode, target temp, current temp
+    const deviceKey = `${device.ip}_${device.eoj}`;
+
+    // Get cached state for comparison
+    const currentState = this.deviceStateCache.get(deviceKey) || {};
+    const changes: Record<string, string> = {};
+
+    try {
+      // Use multi-request to get all properties in one TID
+      const results = await this.sendEchoNetMultiRequestDirect(device.ip, device.eoj, stateProperties);
+      
+      // Process all results
+      for (const [epc, value] of Object.entries(results)) {
+        if (value !== undefined && currentState[epc] !== value) {
+          changes[epc] = value as string;
+        }
+        if (value !== undefined) {
+          currentState[epc] = value as string;
+        }
+      }
+      
+      // Update the device state cache
+      this.deviceStateCache.set(deviceKey, currentState);
+
+      // Only trigger state change handling if there are actual changes
+      if (Object.keys(changes).length > 0) {
+        this.log.info(`Multi-polling detected ${Object.keys(changes).length} state changes for ${device.ip}: ${Object.keys(changes).join(', ')}`);
+        this.handleDeviceStateChange(device.ip, device.eoj, changes);
+      }
+      
+      // Log polling success occasionally (reduced frequency due to efficiency gain)
+      if (Object.keys(results).length === stateProperties.length && this.shouldLogUnmatchedResponse(`${device.ip}_poll_success`)) {
+        this.log.debug(`Multi-polling successful for ${device.ip} (${Object.keys(results).length}/${stateProperties.length} properties, 1 TID)`);
+      }
+      
+    } catch (error) {
+      // Fallback to individual requests if multi-request fails
+      this.log.warn(`Multi-polling failed for ${device.ip}, falling back to individual requests:`, error instanceof Error ? error.message : 'unknown error');
+      await this.pollDeviceStateSequentialFallback(device);
+    }
+  }
+
+  /**
+   * Fallback polling using individual requests (original method)
+   */
+  private async pollDeviceStateSequentialFallback(device: AirConditionerDevice): Promise<void> {
+    const stateProperties = ['80', 'b0', 'b3', 'bb'];
+    const deviceKey = `${device.ip}_${device.eoj}`;
+    const currentState = this.deviceStateCache.get(deviceKey) || {};
+    const changes: Record<string, string> = {};
+
+    for (const epc of stateProperties) {
+      try {
+        const value = await this.sendEchoNetRequestDirect(device.ip, device.eoj, epc);
+        
+        if (currentState[epc] !== value) {
+          changes[epc] = value;
+        }
+        currentState[epc] = value;
+      } catch (error) {
+        if (this.shouldLogUnmatchedResponse(`${device.ip}_fallback_error`)) {
+          this.log.warn(`Fallback polling errors for ${device.ip}, check device connectivity`);
+        }
+      }
+    }
+
+    this.deviceStateCache.set(deviceKey, currentState);
+
+    if (Object.keys(changes).length > 0) {
+      this.log.info(`Fallback polling detected ${Object.keys(changes).length} state changes for ${device.ip}: ${Object.keys(changes).join(', ')}`);
+      this.handleDeviceStateChange(device.ip, device.eoj, changes);
+    }
+  }
+
+  /**
+   * Stop polling for a device
+   */
+  private stopPollingForDevice(device: AirConditionerDevice): void {
+    const deviceKey = `${device.ip}_${device.eoj}`;
+    const timer = this.pollingTimers.get(deviceKey);
+    
+    if (timer) {
+      clearInterval(timer);
+      this.pollingTimers.delete(deviceKey);
+      this.log.debug(`Stopped polling for device ${deviceKey}`);
+    }
+  }
+
+  /**
+   * Start monitoring INF notifications to detect potential issues
+   */
+  private startInfNotificationMonitoring(): void {
+    // Check INF notification statistics every 5 minutes
+    setInterval(() => {
+      this.reportInfNotificationStatistics();
+    }, 5 * 60 * 1000); // 5 minutes
+  }
+
+  /**
+   * Report INF notification statistics for diagnostics
+   */
+  private reportInfNotificationStatistics(): void {
+    if (this.infNotificationCount.size === 0) {
+      this.log.debug('📊 INF Notification Statistics: No devices tracked yet');
+      return;
+    }
+
+    this.log.info('📊 INF Notification Statistics:');
+    
+    for (const [deviceKey, count] of this.infNotificationCount.entries()) {
+      const lastReceived = this.lastInfNotificationTime.get(deviceKey);
+      const timeSinceLastInf = lastReceived ? Date.now() - lastReceived : null;
+      
+      if (timeSinceLastInf && timeSinceLastInf > 10 * 60 * 1000) { // More than 10 minutes
+        this.log.warn(`  📵 Device ${deviceKey}: ${count} INF notifications, last received ${Math.round(timeSinceLastInf / 60000)} minutes ago`);
+      } else {
+        this.log.info(`  📶 Device ${deviceKey}: ${count} INF notifications, last received ${timeSinceLastInf ? Math.round(timeSinceLastInf / 1000) : 'never'} seconds ago`);
+      }
+    }
+    
+    // Suggest solutions if no INF notifications are being received
+    const devicesWithoutRecentInf = Array.from(this.infNotificationCount.keys()).filter(deviceKey => {
+      const lastReceived = this.lastInfNotificationTime.get(deviceKey);
+      return !lastReceived || (Date.now() - lastReceived) > 15 * 60 * 1000; // 15 minutes
+    });
+    
+    if (devicesWithoutRecentInf.length > 0) {
+      this.log.warn('💡 Tip: Some devices are not sending INF notifications. This may be normal behavior for some devices.');
+      this.log.warn('     External operations will still be detected via polling every', this.pollingConfig.intervalMs / 1000, 'seconds.');
+    }
+  }
+
+  /**
+   * Setup notification properties for a device to enable real-time external operation detection
+   */
+  private async setupNotificationProperties(device: AirConditionerDevice): Promise<void> {
+    this.log.info(`🔔 Setting up INF notifications for ${device.deviceId}`);
+    
+    try {
+      // First, get current notification property map (EPC: 0x9E)
+      const currentNotificationMap = await this.getNotificationPropertyMap(device);
+      
+      // Properties we want to be notified about (operation state, mode, temperatures)
+      const desiredNotificationEPCs = ['80', 'b0', 'b3', 'bb'];
+      
+      // Check if all desired EPCs are already in notification map (case-insensitive)
+      const currentEPCsUpper = currentNotificationMap.map(epc => epc.toUpperCase());
+      const missingEPCs = desiredNotificationEPCs.filter(epc => 
+        !currentEPCsUpper.includes(epc.toUpperCase())
+      );
+      
+      if (missingEPCs.length === 0) {
+        this.log.info(`✅ Device ${device.deviceId} already has all required notification properties configured`);
+        return;
+      }
+      
+      this.log.info(`🔧 Adding notification properties for ${device.deviceId}: ${missingEPCs.join(', ')}`);
+      
+      // Create new notification property map (remove duplicates case-insensitively)
+      const allEPCs = [...currentNotificationMap, ...missingEPCs.map(epc => epc.toUpperCase())];
+      const newNotificationEPCs = [...new Set(allEPCs.map(epc => epc.toUpperCase()))];
+      
+      // Set notification property map (EPC: 0x9E)
+      await this.setNotificationPropertyMap(device, newNotificationEPCs);
+      
+      this.log.info(`✅ Successfully configured INF notifications for ${device.deviceId}`);
+      
+    } catch (error) {
+      this.log.warn(`Failed to setup INF notifications for ${device.deviceId}:`, error instanceof Error ? error.message : 'unknown error');
+      this.log.warn('External operations will be detected via polling instead');
+    }
+  }
+
+  /**
+   * Get current notification property map from device (EPC: 0x9E)
+   */
+  private async getNotificationPropertyMap(device: AirConditionerDevice): Promise<string[]> {
+    return new Promise((resolve, reject) => {
+      const requestKey = `${device.ip}_${device.eoj}_9e_${Date.now()}`;
+      
+      // Store request for matching response
+      this.pendingRequests.set(requestKey, {
+        resolve: (response: unknown) => {
+          const mapData = response as string;
+          if (mapData && mapData.length >= 2) {
+            // Parse property map: first byte is count, followed by EPC list
+            const count = parseInt(mapData.substring(0, 2), 16);
+            const epcs: string[] = [];
+            
+            for (let i = 0; i < count; i++) {
+              const startPos = 2 + (i * 2);
+              const endPos = startPos + 2;
+              if (startPos < mapData.length) {
+                epcs.push(mapData.substring(startPos, endPos));
+              }
+            }
+            
+            this.log.debug(`Current notification property map for ${device.deviceId}: ${epcs.join(', ')}`);
+            resolve(epcs);
+          } else {
+            resolve([]); // Empty notification map
+          }
+        },
+        reject,
+        timestamp: Date.now(),
+        ip: device.ip,
+        eoj: device.eoj,
+        epc: '9e',
+      });
+      
+      // Send GET request for notification property map
+      EL.sendOPC1(device.ip, [0x05, 0xff, 0x01], device.eoj, 0x62, '9e', []);
+      
+      // Set timeout
+      setTimeout(() => {
+        if (this.pendingRequests.has(requestKey)) {
+          this.pendingRequests.delete(requestKey);
+          reject(new Error(`Timeout getting notification property map from ${device.ip}`));
+        }
+      }, 3000);
+    });
+  }
+
+  /**
+   * Set notification property map for device (EPC: 0x9E)
+   */
+  private async setNotificationPropertyMap(device: AirConditionerDevice, epcs: string[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const requestKey = `${device.ip}_${device.eoj}_9e_set_${Date.now()}`;
+      
+      // Store request for matching response
+      this.pendingRequests.set(requestKey, {
+        resolve: () => resolve(),
+        reject,
+        timestamp: Date.now(),
+        ip: device.ip,
+        eoj: device.eoj,
+        epc: '9e',
+      });
+      
+      // Prepare data: count + EPC list
+      const count = epcs.length;
+      const data = [count, ...epcs.map(epc => parseInt(epc, 16))];
+      
+      this.log.debug(`Setting notification property map for ${device.deviceId}: ${epcs.join(', ')}`);
+      
+      // Send SET request for notification property map
+      EL.sendOPC1(device.ip, [0x05, 0xff, 0x01], device.eoj, 0x61, '9e', data);
+      
+      // Set timeout
+      setTimeout(() => {
+        if (this.pendingRequests.has(requestKey)) {
+          this.pendingRequests.delete(requestKey);
+          reject(new Error(`Timeout setting notification property map on ${device.ip}`));
+        }
+      }, 3000);
+    });
+  }
+
+  /**
+   * Verify HomeKit synchronization after updates
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private verifyHomeKitSync(accessory: PlatformAccessory, expectedDetails: any): void {
+    const service = accessory.getService(this.Service.Thermostat);
+    if (!service) return;
+
+    this.log.debug(`🔍 Verifying HomeKit sync for ${accessory.displayName}`);
+    
+    let syncIssues = 0;
+    
+    // Check operation status sync
+    if (expectedDetails['80']) {
+      const expectedState = expectedDetails['80'] === '30' ? 2 : 0;
+      const currentState = service.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState).value;
+      const targetState = service.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).value;
+      
+      if (currentState !== expectedState || targetState !== expectedState) {
+        this.log.warn(`❌ HomeKit sync issue - Operation State: expected=${expectedState}, current=${currentState}, target=${targetState}`);
+        // Force resync
+        service.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState).updateValue(expectedState);
+        service.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).updateValue(expectedState);
+        syncIssues++;
+      }
+    }
+    
+    // Check temperature sync
+    if (expectedDetails['b3']) {
+      const expectedTemp = parseInt(expectedDetails['b3'], 16);
+      const currentTemp = service.getCharacteristic(this.Characteristic.TargetTemperature).value as number;
+      
+      if (Math.abs(currentTemp - expectedTemp) > 0.5) {
+        this.log.warn(`❌ HomeKit sync issue - Target Temperature: expected=${expectedTemp}°C, current=${currentTemp}°C`);
+        service.getCharacteristic(this.Characteristic.TargetTemperature).updateValue(expectedTemp);
+        syncIssues++;
+      }
+    }
+    
+    if (syncIssues === 0) {
+      this.log.debug(`✅ HomeKit sync verified for ${accessory.displayName}`);
     } else {
-      // the accessory does not yet exist, so we need to create it
-      this.log.info('Adding new accessory:', address);
-
-      // create a new accessory
-      const accessory = new this.api.platformAccessory(address, uuid);
-
-      // store a copy of the device object in the `accessory.context`
-      // the `context` property can be used to store any data about the accessory you may need
-      accessory.context.device = device;
-      accessory.context.address = address;
-      accessory.context.eoj = eoj;
-      accessory.context.uuid = uuid;
-
-      // create the accessory handler for the newly create accessory
-      // this is imported from `platformAccessory.ts`
-      new EoliaPlatformAccessory(this, accessory);
-
-      // link the accessory to your platform
-      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.log.warn(`⚠️  HomeKit sync corrected ${syncIssues} issues for ${accessory.displayName}`);
     }
   }
 }
