@@ -1,6 +1,8 @@
 import type { CharacteristicValue, PlatformAccessory, Service } from 'homebridge';
 
 import type { EchoNetLiteAirconPlatform } from './platform.js';
+import type { AirConditionerDevice } from './types.js';
+import { REQUEST_TIMING } from './constants.js';
 
 /**
  * Platform Accessory
@@ -31,7 +33,7 @@ export class AirConditionerAccessory {
     targetTemperature: 0,
     operationMode: 0,
   };
-  private cacheTimeout = 2000; // 2 seconds cache for Homebridge compatibility
+  private cacheTimeout = REQUEST_TIMING.CACHE_TIMEOUT_MS; // Cache timeout for Homebridge compatibility
 
   constructor(
     private readonly platform: EchoNetLiteAirconPlatform,
@@ -71,8 +73,16 @@ export class AirConditionerAccessory {
       .onSet(this.setTargetTemperature.bind(this))
       .onGet(this.getTargetTemperature.bind(this));
 
+    // Active (ON/OFF state) - This is crucial for iOS Home app
+    this.service.getCharacteristic(this.platform.Characteristic.Active)
+      .onSet(this.setActive.bind(this))
+      .onGet(this.getActive.bind(this));
+
     // Request initial state load in background to prevent showing default OFF status
     this.loadInitialStateFromDevice();
+    
+    // Load manufacturer information in background
+    this.loadManufacturerInformation();
   }
 
   /**
@@ -107,7 +117,13 @@ export class AirConditionerAccessory {
             const { isOn, mode } = opState;
             if (mode > 0 || isOn) { // Only update if we got meaningful data
               this.airconStates.TargetHeatingCoolingState = isOn ? mode : 0;
-              this.airconStates.CurrentHeatingCoolingState = isOn ? mode : 0;
+              // Handle AUTO mode for CurrentHeatingCoolingState (doesn't support value 3)
+              let currentMode = mode;
+              if (mode === 3) { // AUTO mode
+                // Default to Cool for AUTO mode when we don't have temperature data
+                currentMode = 2;
+              }
+              this.airconStates.CurrentHeatingCoolingState = isOn ? currentMode : 0;
               stateUpdated = true;
               this.platform.log.debug(`Loaded operation state for ${this.accessory.displayName}: ${isOn ? 'ON' : 'OFF'}, mode: ${mode}`);
             }
@@ -134,6 +150,7 @@ export class AirConditionerAccessory {
           this.service.updateCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState, this.airconStates.TargetHeatingCoolingState);
           this.service.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, this.airconStates.CurrentTemperature);
           this.service.updateCharacteristic(this.platform.Characteristic.TargetTemperature, this.airconStates.TargetTemperature);
+          this.service.updateCharacteristic(this.platform.Characteristic.Active, this.airconStates.TargetHeatingCoolingState > 0 ? 1 : 0);
         }
         
       } catch (error) {
@@ -169,18 +186,27 @@ export class AirConditionerAccessory {
       this.lastUpdateTime.operationMode = Date.now();
       
       // Immediately update CurrentHeatingCoolingState to reflect the change
-      this.airconStates.CurrentHeatingCoolingState = state;
+      // Handle AUTO mode for CurrentHeatingCoolingState (doesn't support value 3)
+      let currentState = state;
+      if (state === 3) { // AUTO mode
+        // Use temperature data to determine actual heating/cooling state
+        const currentTemp = this.airconStates.CurrentTemperature;
+        const targetTemp = this.airconStates.TargetTemperature;
+        currentState = (targetTemp > currentTemp) ? 1 : 2; // Heat : Cool
+      }
+      this.airconStates.CurrentHeatingCoolingState = currentState;
       
       // Notify HomeKit of the state change immediately
-      this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState, state);
+      this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState, currentState);
       this.service.updateCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState, state);
+      this.service.updateCharacteristic(this.platform.Characteristic.Active, state > 0 ? 1 : 0);
       
       this.platform.log.debug(`HomeKit characteristics updated immediately: Current=${state}, Target=${state}`);
       
       // Schedule a verification check after a short delay to ensure device state matches
       setTimeout(() => {
         this.verifyOperationStateChange(device, state);
-      }, 2000); // Verify after 2 seconds
+      }, REQUEST_TIMING.STANDARD_TIMEOUT_MS); // Verify after delay
       
     } catch (error) {
       this.platform.log.error('Failed to set heating/cooling state:', error);
@@ -193,8 +219,7 @@ export class AirConditionerAccessory {
   /**
    * Get operation state and mode with caching (optimized to avoid duplicate requests)
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async getOperationStateAndMode(device: any): Promise<{ isOn: boolean; mode: number }> {
+  private async getOperationStateAndMode(device: AirConditionerDevice): Promise<{ isOn: boolean; mode: number }> {
     // Return cached values if still valid
     if (this.isCacheValid('operationState') && this.isCacheValid('operationMode')) {
       return {
@@ -210,14 +235,13 @@ export class AirConditionerAccessory {
     // eslint-disable-next-line dot-notation
     if (platformCache && platformCache['80'] && platformCache['b0']) {
       // Use cached data from platform (from multi-EPC requests)
-      // eslint-disable-next-line dot-notation
       const isOn = platformCache['80'] === '30';
       let mode = 0;
       
       if (isOn) {
         // eslint-disable-next-line dot-notation
         const epcMode = parseInt(platformCache['b0'], 16);
-        // Convert EchoNet-Lite mode to HomeKit mode
+        // Convert EchoNet-Lite mode to HomeKit TargetHeatingCoolingState
         switch (epcMode) {
         case 0x41: mode = 3; break; // Auto
         case 0x42: mode = 2; break; // Cool
@@ -228,13 +252,46 @@ export class AirConditionerAccessory {
         }
       }
       
+      // Calculate CurrentHeatingCoolingState (doesn't support AUTO)
+      let currentMode = mode;
+      if (isOn && mode === 3) { // AUTO mode
+        // Get temperature data from cache with validation
+        let currentTemp = this.airconStates.CurrentTemperature;
+        let targetTemp = this.airconStates.TargetTemperature;
+        
+        // eslint-disable-next-line dot-notation
+        if (platformCache['bb']) {
+          // eslint-disable-next-line dot-notation
+          const currentTempValue = parseInt(platformCache['bb'], 16);
+          if (currentTempValue !== 0xFD && currentTempValue !== 0xFE && currentTempValue !== 0xFF) {
+            currentTemp = currentTempValue;
+          }
+        }
+        
+        // eslint-disable-next-line dot-notation
+        if (platformCache['b3']) {
+          // eslint-disable-next-line dot-notation
+          const targetTempValue = parseInt(platformCache['b3'], 16);
+          if (targetTempValue !== 0xFD && targetTempValue !== 0xFE && targetTempValue !== 0xFF) {
+            targetTemp = targetTempValue;
+          }
+        }
+        
+        // Determine actual heating/cooling state based on temperature difference
+        if (targetTemp > currentTemp) {
+          currentMode = 1; // Heat
+        } else {
+          currentMode = 2; // Cool
+        }
+      }
+      
       // Update local cache timestamps to prevent immediate re-fetch
       this.lastUpdateTime.operationState = Date.now();
       this.lastUpdateTime.operationMode = Date.now();
       
       // Update local state cache
       this.airconStates.TargetHeatingCoolingState = isOn ? mode : 0;
-      this.airconStates.CurrentHeatingCoolingState = isOn ? mode : 0;
+      this.airconStates.CurrentHeatingCoolingState = isOn ? currentMode : 0;
       
       this.platform.log.debug(`Using platform cache for ${this.accessory.displayName}: ${isOn ? 'ON' : 'OFF'}, mode: ${mode}`);
       return { isOn, mode };
@@ -269,7 +326,7 @@ export class AirConditionerAccessory {
       const result = await Promise.race([
         this.getOperationStateAndMode(device),
         new Promise<{ isOn: boolean; mode: number }>((_, reject) => 
-          setTimeout(() => reject(new Error('Quick timeout')), 800),
+          setTimeout(() => reject(new Error('Quick timeout')), REQUEST_TIMING.QUICK_TIMEOUT_MS),
         ),
       ]);
       
@@ -298,11 +355,41 @@ export class AirConditionerAccessory {
       const result = await Promise.race([
         this.getOperationStateAndMode(device),
         new Promise<{ isOn: boolean; mode: number }>((_, reject) => 
-          setTimeout(() => reject(new Error('Quick timeout')), 800),
+          setTimeout(() => reject(new Error('Quick timeout')), REQUEST_TIMING.QUICK_TIMEOUT_MS),
         ),
       ]);
       
-      const state = result.isOn ? result.mode : 0;
+      // Handle AUTO mode for CurrentHeatingCoolingState
+      let state = result.isOn ? result.mode : 0;
+      if (state === 3) { // AUTO mode
+        const device = this.accessory.context.device;
+        const deviceKey = `${device.ip}_${device.eoj}`;
+        const platformCache = this.platform.getDeviceStateCache(deviceKey);
+        
+        // Get temperature data with validation
+        let currentTemp = this.airconStates.CurrentTemperature;
+        let targetTemp = this.airconStates.TargetTemperature;
+        
+        // eslint-disable-next-line dot-notation
+        if (platformCache?.['bb']) {
+          // eslint-disable-next-line dot-notation
+          const currentTempValue = parseInt(platformCache['bb'], 16);
+          if (currentTempValue !== 0xFD && currentTempValue !== 0xFE && currentTempValue !== 0xFF) {
+            currentTemp = currentTempValue;
+          }
+        }
+        
+        // eslint-disable-next-line dot-notation
+        if (platformCache?.['b3']) {
+          // eslint-disable-next-line dot-notation
+          const targetTempValue = parseInt(platformCache['b3'], 16);
+          if (targetTempValue !== 0xFD && targetTempValue !== 0xFE && targetTempValue !== 0xFF) {
+            targetTemp = targetTempValue;
+          }
+        }
+        
+        state = (targetTemp > currentTemp) ? 1 : 2; // Heat : Cool
+      }
       this.airconStates.CurrentHeatingCoolingState = state;
       this.platform.log.debug('Get Current Heating Cooling State (fresh) ->', state);
       return state;
@@ -345,7 +432,7 @@ export class AirConditionerAccessory {
       // Schedule a verification check after a short delay to ensure device state matches
       setTimeout(() => {
         this.verifyTargetTemperatureChange(device, clampedTemp);
-      }, 2000); // Verify after 2 seconds
+      }, REQUEST_TIMING.STANDARD_TIMEOUT_MS); // Verify after delay
       
     } catch (error) {
       this.platform.log.error('Failed to set target temperature:', error);
@@ -373,8 +460,10 @@ export class AirConditionerAccessory {
     if (platformCache && platformCache['b3']) {
       // eslint-disable-next-line dot-notation
       const targetTempHex = platformCache['b3'];
-      if (targetTempHex !== 'fd') { // Not "property not set"
-        const temp = parseInt(targetTempHex, 16);
+      const tempValue = parseInt(targetTempHex, 16);
+      // Check for EchoNet-Lite special values
+      if (tempValue !== 0xFD && tempValue !== 0xFE && tempValue !== 0xFF) {
+        const temp = tempValue;
         
         // Update local cache timestamps to prevent immediate re-fetch
         this.lastUpdateTime.targetTemperature = Date.now();
@@ -395,7 +484,7 @@ export class AirConditionerAccessory {
       const temp = await Promise.race([
         this.platform.getTargetTemperature(device),
         new Promise<number>((_, reject) => 
-          setTimeout(() => reject(new Error('Quick timeout')), 1000),
+          setTimeout(() => reject(new Error('Quick timeout')), REQUEST_TIMING.STANDARD_TIMEOUT_MS),
         ),
       ]);
       
@@ -436,8 +525,10 @@ export class AirConditionerAccessory {
     if (platformCache && platformCache['bb']) {
       // eslint-disable-next-line dot-notation
       const currentTempHex = platformCache['bb'];
-      if (currentTempHex !== 'fd') { // Not "property not set"
-        const temp = parseInt(currentTempHex, 16);
+      const tempValue = parseInt(currentTempHex, 16);
+      // Check for EchoNet-Lite special values
+      if (tempValue !== 0xFD && tempValue !== 0xFE && tempValue !== 0xFF) {
+        const temp = tempValue;
         
         // Update local cache timestamps to prevent immediate re-fetch
         this.lastUpdateTime.currentTemperature = Date.now();
@@ -459,7 +550,7 @@ export class AirConditionerAccessory {
       const freshData = await Promise.race([
         this.platform.getCurrentTemperature(device),
         new Promise<number>((_, reject) => 
-          setTimeout(() => reject(new Error('Quick timeout')), 1000),
+          setTimeout(() => reject(new Error('Quick timeout')), REQUEST_TIMING.STANDARD_TIMEOUT_MS),
         ),
       ]);
       
@@ -495,8 +586,7 @@ export class AirConditionerAccessory {
   /**
    * Verify operation state change after SET operation
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async verifyOperationStateChange(device: any, expectedState: number): Promise<void> {
+  private async verifyOperationStateChange(device: AirConditionerDevice, expectedState: number): Promise<void> {
     try {
       const result = await this.getOperationStateAndMode(device);
       const actualState = result.isOn ? result.mode : 0;
@@ -506,11 +596,21 @@ export class AirConditionerAccessory {
         
         // Update with actual device state
         this.airconStates.TargetHeatingCoolingState = actualState;
-        this.airconStates.CurrentHeatingCoolingState = actualState;
+        
+        // Handle AUTO mode for CurrentHeatingCoolingState (doesn't support value 3)
+        let currentActualState = actualState;
+        if (actualState === 3) { // AUTO mode
+          // Use temperature data to determine actual heating/cooling state
+          const currentTemp = this.airconStates.CurrentTemperature;
+          const targetTemp = this.airconStates.TargetTemperature;
+          currentActualState = (targetTemp > currentTemp) ? 1 : 2; // Heat : Cool
+        }
+        this.airconStates.CurrentHeatingCoolingState = currentActualState;
         
         // Notify HomeKit of the corrected state (external device state correction)
-        this.service.getCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState).updateValue(actualState);
-        this.service.getCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState).updateValue(actualState);
+        this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState, currentActualState);
+        this.service.updateCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState, actualState);
+        this.service.updateCharacteristic(this.platform.Characteristic.Active, actualState > 0 ? 1 : 0);
         
         this.platform.log.debug(`HomeKit characteristics corrected to actual device state: ${actualState}`);
       } else {
@@ -524,8 +624,7 @@ export class AirConditionerAccessory {
   /**
    * Verify target temperature change after SET operation
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async verifyTargetTemperatureChange(device: any, expectedTemp: number): Promise<void> {
+  private async verifyTargetTemperatureChange(device: AirConditionerDevice, expectedTemp: number): Promise<void> {
     try {
       const actualTemp = await this.platform.getTargetTemperature(device);
       
@@ -536,7 +635,7 @@ export class AirConditionerAccessory {
         this.airconStates.TargetTemperature = actualTemp;
         
         // Notify HomeKit of the corrected temperature (external device state correction)
-        this.service.getCharacteristic(this.platform.Characteristic.TargetTemperature).updateValue(actualTemp);
+        this.service.updateCharacteristic(this.platform.Characteristic.TargetTemperature, actualTemp);
         
         this.platform.log.debug(`HomeKit target temperature corrected to actual device state: ${actualTemp}°C`);
       } else {
@@ -544,6 +643,105 @@ export class AirConditionerAccessory {
       }
     } catch (error) {
       this.platform.log.debug(`Target temperature verification failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+  }
+
+  /**
+   * Handle "GET" requests for Active state
+   */
+  async getActive(): Promise<CharacteristicValue> {
+    const isActive = this.airconStates.TargetHeatingCoolingState > 0;
+    this.platform.log.debug('Get Active ->', isActive ? 1 : 0);
+    return isActive ? 1 : 0; // 1 = ACTIVE, 0 = INACTIVE
+  }
+
+  /**
+   * Handle "SET" requests for Active state
+   */
+  async setActive(value: CharacteristicValue): Promise<void> {
+    const isActive = value === 1;
+    this.platform.log.info(`Set Active -> ${isActive ? 'ACTIVE' : 'INACTIVE'}`);
+    
+    try {
+      const device = this.accessory.context.device;
+      
+      if (isActive) {
+        // Turn ON with last used mode (or default to cool)
+        const lastMode = this.airconStates.TargetHeatingCoolingState || 2; // Default to Cool
+        await this.platform.setOperationState(device, true);
+        
+        // Update states
+        this.airconStates.TargetHeatingCoolingState = lastMode;
+        
+        // Handle AUTO mode for CurrentHeatingCoolingState
+        let currentMode = lastMode;
+        if (lastMode === 3) { // AUTO mode
+          const currentTemp = this.airconStates.CurrentTemperature;
+          const targetTemp = this.airconStates.TargetTemperature;
+          currentMode = (targetTemp > currentTemp) ? 1 : 2; // Heat : Cool
+        }
+        this.airconStates.CurrentHeatingCoolingState = currentMode;
+        
+        // Update HomeKit characteristics
+        this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState, currentMode);
+        this.service.updateCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState, lastMode);
+        
+      } else {
+        // Turn OFF
+        await this.platform.setOperationState(device, false);
+        
+        // Update states
+        this.airconStates.TargetHeatingCoolingState = 0;
+        this.airconStates.CurrentHeatingCoolingState = 0;
+        
+        // Update HomeKit characteristics
+        this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState, 0);
+        this.service.updateCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState, 0);
+      }
+      
+      this.platform.log.debug(`Active state successfully set to: ${isActive ? 'ACTIVE' : 'INACTIVE'}`);
+      
+    } catch (error) {
+      this.platform.log.error('Failed to set active state:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Load manufacturer information from device
+   */
+  private async loadManufacturerInformation(): Promise<void> {
+    try {
+      const device = this.accessory.context.device;
+      
+      this.platform.log.debug(`Loading manufacturer information for ${this.accessory.displayName}`);
+      
+      // Get manufacturer code from device
+      const manufacturerCode = await this.platform.getManufacturerCode(device);
+      
+      if (manufacturerCode && manufacturerCode !== '000000') {
+        // Get manufacturer name from code
+        const manufacturerName = this.platform.getManufacturerName(manufacturerCode);
+        
+        this.platform.log.info(`📱 Detected manufacturer for ${this.accessory.displayName}: ${manufacturerName} (0x${manufacturerCode})`);
+        
+        // Update accessory information with manufacturer name
+        this.accessory.getService(this.platform.Service.AccessoryInformation)!
+          .setCharacteristic(this.platform.Characteristic.Manufacturer, manufacturerName);
+        
+        // Store manufacturer information in context for future use
+        if (!this.accessory.context.device.manufacturer) {
+          this.accessory.context.device.manufacturer = manufacturerName;
+          this.accessory.context.device.manufacturerCode = manufacturerCode;
+        }
+        
+      } else {
+        this.platform.log.warn(`Could not determine manufacturer for ${this.accessory.displayName}`);
+      }
+      
+    } catch (error) {
+      this.platform.log.debug(`Failed to load manufacturer information for ${this.accessory.displayName}:`, 
+        error instanceof Error ? error.message : 'unknown error');
     }
   }
 }

@@ -2,6 +2,22 @@ import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAcces
 
 import { AirConditionerAccessory } from './platformAccessory.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
+import {
+  AirConditionerDevice,
+  DeviceStateDetails,
+  EchoNetLiteMessage,
+  EchoNetLiteRemoteInfo,
+  PendingRequests,
+  PollingConfig,
+  RetryConfig,
+} from './types.js';
+import {
+  DEFAULT_POLLING_CONFIG,
+  DEFAULT_RETRY_CONFIG,
+  MANUFACTURER_CODES,
+  REQUEST_TIMING,
+  UNKNOWN_MANUFACTURER,
+} from './constants.js';
 
 // This is only required when using Custom Services and Characteristics not support by HomeKit
 import { EveHomeKitTypes } from 'homebridge-lib/EveHomeKitTypes';
@@ -11,14 +27,6 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const EL = require('echonet-lite');
 
-interface AirConditionerDevice {
-  ip: string;
-  eoj: string;
-  deviceId: string;
-  manufacturer?: string;
-  model?: string;
-  serialNumber?: string;
-}
 
 /**
  * EchoNetLiteAirconPlatform
@@ -43,30 +51,16 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
   private elSocket: unknown = null;
   private discoveredDevices: Map<string, AirConditionerDevice> = new Map();
   private discoveryTimeout: NodeJS.Timeout | null = null;
-  private pendingRequests: Map<string, {
-    resolve: (value: unknown) => void;
-    reject: (reason?: unknown) => void;
-    timestamp: number;
-    ip: string;
-    eoj: string;
-    epc: string;
-  }> = new Map();
+  private pendingRequests: PendingRequests = new Map();
   private requestQueue: Array<() => Promise<void>> = [];
   private isProcessingQueue = false;
   private lastRequestTime: Map<string, number> = new Map(); // Track last request time per device
   
   // Retry configuration
-  private retryConfig = {
-    maxRetries: 5,
-    baseDelayMs: 500, // Initial delay: 500ms
-    maxDelayMs: 8000, // Maximum delay: 8s
-  };
+  private retryConfig: RetryConfig = DEFAULT_RETRY_CONFIG;
   
   // Polling configuration for external state changes
-  private pollingConfig = {
-    enabled: true,
-    intervalMs: 60000, // Poll every 60 seconds (1 minute) - configurable via config.json
-  };
+  private pollingConfig: PollingConfig = DEFAULT_POLLING_CONFIG;
   private pollingTimers: Map<string, NodeJS.Timeout> = new Map();
   
   // Device state cache for change detection
@@ -74,7 +68,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
   
   // Log throttling for unmatched responses
   private lastUnmatchedLogTime: Map<string, number> = new Map();
-  private unmatchedLogInterval = 60000; // Log unmatched responses at most once per minute per device
+  private unmatchedLogInterval = REQUEST_TIMING.QUICK_TIMEOUT_MS; // Log unmatched responses throttling
   
   // INF notification tracking
   private infNotificationCount: Map<string, number> = new Map();
@@ -153,8 +147,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       const objList = ['05ff01']; // Controller object
       
       // Initialize EchoNet-Lite with callback for receiving data
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.elSocket = await EL.initialize(objList, (rinfo: any, els: any, err?: unknown) => {
+      this.elSocket = await EL.initialize(objList, (rinfo: EchoNetLiteRemoteInfo, els: EchoNetLiteMessage, err?: unknown) => {
         if (err) {
           this.log.error('EchoNet-Lite receive error:', err);
           return;
@@ -320,7 +313,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
         try {
           await request();
           // Add delay between requests to avoid overwhelming the device
-          await new Promise(resolve => setTimeout(resolve, 100));
+          await new Promise(resolve => setTimeout(resolve, REQUEST_TIMING.REQUEST_QUEUE_DELAY_MS));
         } catch (error) {
           this.log.error('Request queue processing error:', error);
         }
@@ -333,8 +326,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
   /**
    * Send EchoNet-Lite GET request via queue to ensure sequential processing
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async sendEchoNetRequest(ip: string, eoj: string, epc: string): Promise<any> {
+  async sendEchoNetRequest(ip: string, eoj: string, epc: string): Promise<string> {
     return new Promise((resolve, reject) => {
       // Add request to queue for sequential processing
       this.requestQueue.push(async () => {
@@ -384,8 +376,8 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     const lastRequest = this.lastRequestTime.get(deviceKey) || 0;
     const timeSinceLastRequest = Date.now() - lastRequest;
     
-    if (timeSinceLastRequest < 300) { // Minimum 300ms between requests to same device
-      await new Promise(resolve => setTimeout(resolve, 300 - timeSinceLastRequest));
+    if (timeSinceLastRequest < REQUEST_TIMING.MIN_DEVICE_INTERVAL_MS) { // Minimum interval between requests to same device
+      await new Promise(resolve => setTimeout(resolve, REQUEST_TIMING.MIN_DEVICE_INTERVAL_MS - timeSinceLastRequest));
     }
     
     return new Promise((resolve, reject) => {
@@ -456,15 +448,14 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
   /**
    * Direct EchoNet-Lite GET request implementation (used by queue)
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async sendEchoNetRequestDirect(ip: string, eoj: string, epc: string): Promise<any> {
+  private async sendEchoNetRequestDirect(ip: string, eoj: string, epc: string): Promise<string> {
     // Check if we need to throttle requests to this device
     const deviceKey = `${ip}_${eoj}`;
     const lastRequest = this.lastRequestTime.get(deviceKey) || 0;
     const timeSinceLastRequest = Date.now() - lastRequest;
     
-    if (timeSinceLastRequest < 300) { // Minimum 300ms between requests to same device
-      await new Promise(resolve => setTimeout(resolve, 300 - timeSinceLastRequest));
+    if (timeSinceLastRequest < REQUEST_TIMING.MIN_DEVICE_INTERVAL_MS) { // Minimum interval between requests to same device
+      await new Promise(resolve => setTimeout(resolve, REQUEST_TIMING.MIN_DEVICE_INTERVAL_MS - timeSinceLastRequest));
     }
     
     return new Promise((resolve, reject) => {
@@ -499,7 +490,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
             this.log.warn(`Request timeout: ${requestKey}`);
             reject(error);
           }
-        }, 2000); // 2 second timeout
+        }, REQUEST_TIMING.STANDARD_TIMEOUT_MS); // 2 second timeout
         
       } catch (error) {
         this.log.error(`Failed to send EchoNet request: ${error}`);
@@ -539,8 +530,8 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     const lastRequest = this.lastRequestTime.get(deviceKey) || 0;
     const timeSinceLastRequest = Date.now() - lastRequest;
     
-    if (timeSinceLastRequest < 300) { // Minimum 300ms between requests to same device
-      await new Promise(resolve => setTimeout(resolve, 300 - timeSinceLastRequest));
+    if (timeSinceLastRequest < REQUEST_TIMING.MIN_DEVICE_INTERVAL_MS) { // Minimum interval between requests to same device
+      await new Promise(resolve => setTimeout(resolve, REQUEST_TIMING.MIN_DEVICE_INTERVAL_MS - timeSinceLastRequest));
     }
     
     return new Promise((resolve, reject) => {
@@ -587,8 +578,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
   /**
    * Enhanced message handler that processes responses for pending requests
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private handleEchoNetLiteMessage(rinfo: any, els: any) {
+  private handleEchoNetLiteMessage(rinfo: EchoNetLiteRemoteInfo, els: EchoNetLiteMessage) {
     // Only log detailed message info at trace level to reduce noise
     if (this.log.debug && process.env.HOMEBRIDGE_DEBUG) {
       this.log.debug('Received EchoNet-Lite message from', rinfo.address, ':', els);
@@ -598,8 +588,8 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     let hasMatchedRequests = false;
     
     // Check if this is a response to a pending request
-    if ((els.ESV === '72' || els.ESV === '71') && els.DETAILs) { // GET_RES or SET_RES
-      const responseType = els.ESV === '72' ? 'GET_RES' : 'SET_RES';
+    if ((els.ESV === 0x72 || els.ESV === 0x71) && els.DETAILs) { // GET_RES or SET_RES
+      const responseType = els.ESV === 0x72 ? 'GET_RES' : 'SET_RES';
       
       for (const [epc, value] of Object.entries(els.DETAILs)) {
         // Find the most recent pending request for this device/EPC combination
@@ -623,10 +613,10 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
           this.log.debug(`Resolved ${responseType} for ${rinfo.address} EPC ${epc}: ${value}`);
           this.pendingRequests.delete(mostRecentKey);
           // For GET_RES, pass the value; for SET_RES, just resolve (void)
-          if (els.ESV === '72') {
+          if (els.ESV === 0x72) {
             mostRecentRequest.resolve(value);
           } else {
-            mostRecentRequest.resolve(undefined);
+            mostRecentRequest.resolve('');
           }
         }
       }
@@ -639,7 +629,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     }
     
     // Handle INF notifications (external operations)
-    if (els.ESV === '73' && els.DETAILs && els.SEOJ && els.SEOJ.startsWith('0130')) {
+    if (els.ESV === 0x73 && els.DETAILs && els.SEOJ && els.SEOJ.startsWith('0130')) {
       // Track INF notification reception
       const deviceKey = `${rinfo.address}_${els.SEOJ}`;
       const currentCount = this.infNotificationCount.get(deviceKey) || 0;
@@ -835,9 +825,21 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       'bb',
       'current temperature',
       (response) => {
+        // Validate response before conversion
+        if (!this.isValidEchoNetValue(response, 'bb')) {
+          throw new Error(`Invalid current temperature value: 0x${response} (EchoNet special value)`);
+        }
+        
         // Response is in hex, convert to decimal (temperature in °C)
         const temp = parseInt(response, 16);
-        return temp > 125 ? (temp - 256) : temp; // Handle negative temperatures
+        const actualTemp = temp > 125 ? (temp - 256) : temp; // Handle negative temperatures
+        const clampedTemp = this.clampToHomeKitRange(actualTemp, 'CurrentTemperature');
+        
+        if (actualTemp !== clampedTemp) {
+          throw new Error(`Current temperature ${actualTemp}°C is out of HomeKit range (-270-100°C)`);
+        }
+        
+        return actualTemp;
       },
     );
   }
@@ -851,7 +853,21 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       device,
       'b3',
       'target temperature',
-      (response) => parseInt(response, 16), // Response is in hex, convert to decimal
+      (response) => {
+        // Validate response before conversion
+        if (!this.isValidEchoNetValue(response, 'b3')) {
+          throw new Error(`Invalid target temperature value: 0x${response} (EchoNet special value)`);
+        }
+        
+        const temp = parseInt(response, 16);
+        const clampedTemp = this.clampToHomeKitRange(temp, 'TargetTemperature');
+        
+        if (temp !== clampedTemp) {
+          throw new Error(`Target temperature ${temp}°C is out of HomeKit range (10-38°C)`);
+        }
+        
+        return temp;
+      },
     );
   }
 
@@ -1022,8 +1038,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
   /**
    * Handle device state change from external operations (INF notifications or polling)
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private handleDeviceStateChange(ip: string, eoj: string, details: any): void {
+  private handleDeviceStateChange(ip: string, eoj: string, details: DeviceStateDetails): void {
     this.log.info(`External state change detected for ${ip}/${eoj}:`, details);
     
     const deviceId = `${ip}_${eoj}`;
@@ -1071,14 +1086,19 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     }
     
     // Update HomeKit characteristics based on changed properties
-    this.updateAccessoryCharacteristics(targetAccessory, details);
+    this.updateAccessoryCharacteristics(targetAccessory, details, deviceId);
+    
+    // Schedule a comprehensive device state refresh after INF notification
+    // This ensures we have the complete current state, not just the changed properties
+    setTimeout(() => {
+      this.refreshDeviceStateAfterINF(targetAccessory, deviceId, ip, eoj);
+    }, 500); // Small delay to allow device to settle
   }
 
   /**
    * Update HomeKit characteristics when device state changes
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private updateAccessoryCharacteristics(accessory: PlatformAccessory, details: any): void {
+  private updateAccessoryCharacteristics(accessory: PlatformAccessory, details: DeviceStateDetails, deviceId?: string): void {
     const service = accessory.getService(this.Service.Thermostat);
     if (!service) {
       this.log.warn(`No Thermostat service found for accessory ${accessory.displayName}`);
@@ -1098,7 +1118,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
         updates.push(() => this.updateOperationStatus(service, value as string));
         break;
       case 'b0': // Operation Mode
-        updates.push(() => this.updateOperationMode(service, value as string));
+        updates.push(() => this.updateOperationMode(service, value as string, deviceId));
         break;
       case 'b3': // Target Temperature
         updates.push(() => this.updateTargetTemperature(service, value as string));
@@ -1127,6 +1147,11 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       this.verifyHomeKitSync(accessory, details);
     }, updates.length * 50 + 100);
 
+    // Ensure Active characteristic is properly synchronized
+    setTimeout(() => {
+      this.syncActiveCharacteristic(service, details);
+    }, updates.length * 50 + 150);
+
     this.log.info(`✅ HomeKit characteristic updates scheduled for ${accessory.displayName}`);
   }
 
@@ -1147,35 +1172,19 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     
     this.log.debug(`📱 Updating HomeKit operation status: CurrentState=${state}, TargetState=${state}`);
     
-    // Multiple update attempts for reliability
-    const currentChar = service.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState);
-    const targetChar = service.getCharacteristic(this.Characteristic.TargetHeatingCoolingState);
+    // Primary update - use updateCharacteristic to ensure HomeKit app notification
+    service.updateCharacteristic(this.Characteristic.CurrentHeatingCoolingState, state);
+    service.updateCharacteristic(this.Characteristic.TargetHeatingCoolingState, state);
+    // Update Active characteristic as well
+    service.updateCharacteristic(this.Characteristic.Active, state > 0 ? 1 : 0);
     
-    // Primary update
-    currentChar.updateValue(state);
-    targetChar.updateValue(state);
-    
-    // Backup update after short delay
-    setTimeout(() => {
-      currentChar.updateValue(state);
-      targetChar.updateValue(state);
-      this.log.debug(`📱 Backup HomeKit operation status update: ${state}`);
-    }, 200);
-    
-    // Final fallback update
-    setTimeout(() => {
-      if (currentChar.value !== state || targetChar.value !== state) {
-        currentChar.updateValue(state);
-        targetChar.updateValue(state);
-        this.log.warn(`📱 Fallback HomeKit operation status update triggered: ${state}`);
-      }
-    }, 1000);
+    this.log.debug(`📱 HomeKit operation status updated: ${state} (Active: ${state > 0 ? 1 : 0})`);
   }
 
   /**
    * Update operation mode characteristics
    */
-  private updateOperationMode(service: Service, value: string): void {
+  private updateOperationMode(service: Service, value: string, deviceId?: string): void {
     if (!this.isValidEchoNetValue(value, 'b0')) {
       this.log.warn(`Invalid operation mode value: 0x${value}, skipping update`);
       return;
@@ -1197,29 +1206,26 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     
     this.log.debug(`📱 Updating HomeKit operation mode: CurrentState=${homeKitMode}, TargetState=${homeKitMode}`);
     
-    // Multiple update attempts for operation mode
-    const currentChar = service.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState);
-    const targetChar = service.getCharacteristic(this.Characteristic.TargetHeatingCoolingState);
-    
-    // Primary update
-    currentChar.updateValue(homeKitMode);
-    targetChar.updateValue(homeKitMode);
-    
-    // Backup update
-    setTimeout(() => {
-      currentChar.updateValue(homeKitMode);
-      targetChar.updateValue(homeKitMode);
-      this.log.debug(`📱 Backup HomeKit operation mode update: ${homeKitMode}`);
-    }, 200);
-    
-    // Fallback verification
-    setTimeout(() => {
-      if (currentChar.value !== homeKitMode || targetChar.value !== homeKitMode) {
-        currentChar.updateValue(homeKitMode);
-        targetChar.updateValue(homeKitMode);
-        this.log.warn(`📱 Fallback HomeKit operation mode update triggered: ${homeKitMode}`);
+    // Handle AUTO mode for CurrentHeatingCoolingState (doesn't support value 3)
+    let currentMode = homeKitMode;
+    if (homeKitMode === 3) { // AUTO mode
+      // Get temperature data to determine actual heating/cooling state
+      const deviceCache = deviceId ? this.getDeviceStateCache(deviceId) : null;
+      
+      if (deviceCache?.bb && deviceCache?.b3) {
+        const currentTemp = parseInt(deviceCache.bb, 16);
+        const targetTemp = parseInt(deviceCache.b3, 16);
+        currentMode = (targetTemp > currentTemp) ? 1 : 2; // Heat : Cool
+      } else {
+        currentMode = 2; // Default to Cool if temperature data unavailable
       }
-    }, 1000);
+    }
+    
+    // Update using updateCharacteristic to ensure HomeKit app notification
+    service.updateCharacteristic(this.Characteristic.CurrentHeatingCoolingState, currentMode);
+    service.updateCharacteristic(this.Characteristic.TargetHeatingCoolingState, homeKitMode);
+    
+    this.log.debug(`📱 HomeKit operation mode updated: Current=${currentMode}, Target=${homeKitMode}`);
   }
 
   /**
@@ -1291,24 +1297,10 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     
     this.log.debug(`📱 Updating HomeKit target temperature: ${temperature}°C`);
     
-    const targetTempChar = service.getCharacteristic(this.Characteristic.TargetTemperature);
+    // Update using updateCharacteristic to ensure HomeKit app notification
+    service.updateCharacteristic(this.Characteristic.TargetTemperature, temperature);
     
-    // Primary update
-    targetTempChar.updateValue(temperature);
-    
-    // Backup update
-    setTimeout(() => {
-      targetTempChar.updateValue(temperature);
-      this.log.debug(`📱 Backup HomeKit target temperature update: ${temperature}°C`);
-    }, 200);
-    
-    // Fallback verification
-    setTimeout(() => {
-      if (Math.abs((targetTempChar.value as number) - temperature) > 0.5) {
-        targetTempChar.updateValue(temperature);
-        this.log.warn(`📱 Fallback HomeKit target temperature update triggered: ${temperature}°C`);
-      }
-    }, 1000);
+    this.log.debug(`📱 HomeKit target temperature updated: ${temperature}°C`);
   }
 
   /**
@@ -1332,24 +1324,10 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     
     this.log.debug(`📱 Updating HomeKit current temperature: ${temperature}°C`);
     
-    const currentTempChar = service.getCharacteristic(this.Characteristic.CurrentTemperature);
+    // Update using updateCharacteristic to ensure HomeKit app notification
+    service.updateCharacteristic(this.Characteristic.CurrentTemperature, temperature);
     
-    // Primary update
-    currentTempChar.updateValue(temperature);
-    
-    // Backup update
-    setTimeout(() => {
-      currentTempChar.updateValue(temperature);
-      this.log.debug(`📱 Backup HomeKit current temperature update: ${temperature}°C`);
-    }, 200);
-    
-    // Fallback verification
-    setTimeout(() => {
-      if (Math.abs((currentTempChar.value as number) - temperature) > 0.5) {
-        currentTempChar.updateValue(temperature);
-        this.log.warn(`📱 Fallback HomeKit current temperature update triggered: ${temperature}°C`);
-      }
-    }, 1000);
+    this.log.debug(`📱 HomeKit current temperature updated: ${temperature}°C`);
   }
 
   /**
@@ -1593,7 +1571,8 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       if (timeSinceLastInf && timeSinceLastInf > 10 * 60 * 1000) { // More than 10 minutes
         this.log.warn(`  📵 Device ${deviceKey}: ${count} INF notifications, last received ${Math.round(timeSinceLastInf / 60000)} minutes ago`);
       } else {
-        this.log.info(`  📶 Device ${deviceKey}: ${count} INF notifications, last received ${timeSinceLastInf ? Math.round(timeSinceLastInf / 1000) : 'never'} seconds ago`);
+        this.log.info(`  📶 Device ${deviceKey}: ${count} INF notifications, ` +
+          `last received ${timeSinceLastInf ? Math.round(timeSinceLastInf / 1000) : 'never'} seconds ago`);
       }
     }
     
@@ -1625,7 +1604,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       // Check if all desired EPCs are already in notification map (case-insensitive)
       const currentEPCsUpper = currentNotificationMap.map(epc => epc.toUpperCase());
       const missingEPCs = desiredNotificationEPCs.filter(epc => 
-        !currentEPCsUpper.includes(epc.toUpperCase())
+        !currentEPCsUpper.includes(epc.toUpperCase()),
       );
       
       if (missingEPCs.length === 0) {
@@ -1739,10 +1718,11 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
   /**
    * Verify HomeKit synchronization after updates
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private verifyHomeKitSync(accessory: PlatformAccessory, expectedDetails: any): void {
+  private verifyHomeKitSync(accessory: PlatformAccessory, expectedDetails: DeviceStateDetails): void {
     const service = accessory.getService(this.Service.Thermostat);
-    if (!service) return;
+    if (!service) {
+      return;
+    }
 
     this.log.debug(`🔍 Verifying HomeKit sync for ${accessory.displayName}`);
     
@@ -1756,22 +1736,53 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       
       if (currentState !== expectedState || targetState !== expectedState) {
         this.log.warn(`❌ HomeKit sync issue - Operation State: expected=${expectedState}, current=${currentState}, target=${targetState}`);
-        // Force resync
-        service.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState).updateValue(expectedState);
-        service.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).updateValue(expectedState);
+        // Force resync using updateCharacteristic
+        service.updateCharacteristic(this.Characteristic.CurrentHeatingCoolingState, expectedState);
+        service.updateCharacteristic(this.Characteristic.TargetHeatingCoolingState, expectedState);
+        service.updateCharacteristic(this.Characteristic.Active, expectedState > 0 ? 1 : 0);
         syncIssues++;
       }
     }
     
     // Check temperature sync
-    if (expectedDetails['b3']) {
-      const expectedTemp = parseInt(expectedDetails['b3'], 16);
+    if (expectedDetails.b3) {
+      if (!this.isValidEchoNetValue(expectedDetails.b3, 'b3')) {
+        this.log.debug(`Skipping temperature sync due to invalid EchoNet-Lite value: 0x${expectedDetails.b3}`);
+        return;
+      }
+      
+      const rawTemp = parseInt(expectedDetails.b3, 16);
+      const expectedTemp = this.clampToHomeKitRange(rawTemp, 'TargetTemperature');
       const currentTemp = service.getCharacteristic(this.Characteristic.TargetTemperature).value as number;
+      
+      if (rawTemp !== expectedTemp) {
+        this.log.warn(`Target temperature ${rawTemp}°C is invalid (EchoNet special value or out of range), skipping sync`);
+        return;
+      }
       
       if (Math.abs(currentTemp - expectedTemp) > 0.5) {
         this.log.warn(`❌ HomeKit sync issue - Target Temperature: expected=${expectedTemp}°C, current=${currentTemp}°C`);
-        service.getCharacteristic(this.Characteristic.TargetTemperature).updateValue(expectedTemp);
+        service.updateCharacteristic(this.Characteristic.TargetTemperature, expectedTemp);
         syncIssues++;
+      }
+    }
+    
+    // Check current temperature sync
+    if (expectedDetails.bb) {
+      if (!this.isValidEchoNetValue(expectedDetails.bb, 'bb')) {
+        this.log.debug(`Skipping current temperature sync due to invalid EchoNet-Lite value: 0x${expectedDetails.bb}`);
+      } else {
+        const rawTemp = parseInt(expectedDetails.bb, 16);
+        const expectedTemp = this.clampToHomeKitRange(rawTemp, 'CurrentTemperature');
+        const currentTemp = service.getCharacteristic(this.Characteristic.CurrentTemperature).value as number;
+        
+        if (rawTemp !== expectedTemp) {
+          this.log.warn(`Current temperature ${rawTemp}°C is invalid (EchoNet special value or out of range), skipping sync`);
+        } else if (Math.abs(currentTemp - expectedTemp) > 0.5) {
+          this.log.warn(`❌ HomeKit sync issue - Current Temperature: expected=${expectedTemp}°C, current=${currentTemp}°C`);
+          service.updateCharacteristic(this.Characteristic.CurrentTemperature, expectedTemp);
+          syncIssues++;
+        }
       }
     }
     
@@ -1779,6 +1790,134 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       this.log.debug(`✅ HomeKit sync verified for ${accessory.displayName}`);
     } else {
       this.log.warn(`⚠️  HomeKit sync corrected ${syncIssues} issues for ${accessory.displayName}`);
+    }
+  }
+
+  /**
+   * Synchronize Active characteristic based on current state
+   */
+  private syncActiveCharacteristic(service: Service, details: DeviceStateDetails): void {
+    try {
+      const activeChar = service.getCharacteristic(this.Characteristic.Active);
+      
+      // Determine active state from operation status or heating/cooling state
+      let shouldBeActive = false;
+      
+      if (details['80']) {
+        shouldBeActive = details['80'] === '30'; // 0x30 = ON
+      } else {
+        // Fallback: check current heating/cooling state
+        const currentState = service.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState).value as number;
+        const targetState = service.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).value as number;
+        shouldBeActive = currentState > 0 || targetState > 0;
+      }
+      
+      const expectedActiveValue = shouldBeActive ? 1 : 0;
+      const currentActiveValue = activeChar.value as number;
+      
+      if (currentActiveValue !== expectedActiveValue) {
+        this.log.info(`🔄 Syncing Active characteristic: ${currentActiveValue} -> ${expectedActiveValue}`);
+        service.updateCharacteristic(this.Characteristic.Active, expectedActiveValue);
+      } else {
+        this.log.debug(`✅ Active characteristic already in sync: ${expectedActiveValue}`);
+      }
+      
+    } catch (error) {
+      this.log.warn('Failed to sync Active characteristic:', error instanceof Error ? error.message : 'unknown error');
+    }
+  }
+
+  /**
+   * Refresh complete device state after INF notification
+   * This ensures we have accurate current state, not just the changed properties
+   */
+  private async refreshDeviceStateAfterINF(accessory: PlatformAccessory, deviceId: string, ip: string, eoj: string): Promise<void> {
+    try {
+      this.log.debug(`🔄 Refreshing complete device state after INF for ${accessory.displayName}`);
+      
+      // Fetch complete current state by polling device
+      const stateData: Record<string, string> = {};
+      
+      try {
+        // Get operation status
+        const operationStatus = await this.sendEchoNetRequest(ip, eoj, '80');
+        stateData['80'] = operationStatus;
+        
+        // Get operation mode
+        const operationMode = await this.sendEchoNetRequest(ip, eoj, 'b0');
+        // eslint-disable-next-line dot-notation
+        stateData['b0'] = operationMode;
+        
+        // Get target temperature (may fail for some modes)
+        try {
+          const targetTemp = await this.sendEchoNetRequest(ip, eoj, 'b3');
+          // eslint-disable-next-line dot-notation
+          stateData['b3'] = targetTemp;
+        } catch {
+          // Target temperature may not be available in some modes
+        }
+        
+        // Get current temperature
+        try {
+          const currentTemp = await this.sendEchoNetRequest(ip, eoj, 'bb');
+          // eslint-disable-next-line dot-notation
+          stateData['bb'] = currentTemp;
+        } catch {
+          // Current temperature may not be available
+        }
+        
+      } catch (error) {
+        this.log.warn(`Failed to fetch complete state for ${accessory.displayName}:`, error instanceof Error ? error.message : 'unknown error');
+        return;
+      }
+      
+      if (Object.keys(stateData).length > 0) {
+        // Update device state cache with fresh data
+        const deviceData = { ip, eoj, deviceId };
+        Object.entries(stateData).forEach(([epc, value]) => {
+          this.updateDeviceStateCache(deviceData, epc, value);
+        });
+        
+        this.log.info(`✅ Refreshed complete state for ${accessory.displayName} after INF: ${JSON.stringify(stateData)}`);
+        
+        // Update HomeKit characteristics with complete fresh state
+        this.updateAccessoryCharacteristics(accessory, stateData, deviceId);
+        
+        // Verify sync after refresh
+        setTimeout(() => {
+          this.verifyHomeKitSync(accessory, stateData);
+        }, 200);
+        
+      } else {
+        this.log.warn(`⚠️  Failed to refresh complete state for ${accessory.displayName} after INF`);
+      }
+      
+    } catch (error) {
+      this.log.warn(`Failed to refresh device state after INF for ${accessory.displayName}:`, error instanceof Error ? error.message : 'unknown error');
+    }
+  }
+
+
+  /**
+   * Get manufacturer name from EchoNet-Lite manufacturer code
+   */
+  getManufacturerName(manufacturerCode: string): string {
+    const manufacturer = MANUFACTURER_CODES[manufacturerCode.toLowerCase()];
+    return manufacturer || UNKNOWN_MANUFACTURER;
+  }
+
+  /**
+   * Get manufacturer code from device
+   * EPC: 0x8A - Manufacturer Code
+   */
+  async getManufacturerCode(device: AirConditionerDevice): Promise<string> {
+    try {
+      const response = await this.sendEchoNetRequest(device.ip, device.eoj, '8a');
+      this.log.debug(`Manufacturer code for ${device.ip}: 0x${response}`);
+      return response;
+    } catch (error) {
+      this.log.warn(`Failed to get manufacturer code for ${device.ip}:`, error instanceof Error ? error.message : 'unknown error');
+      return '000000'; // Unknown manufacturer code
     }
   }
 }

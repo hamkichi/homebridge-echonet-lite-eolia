@@ -127,3 +127,6 @@ dist
 
 # Claude
 CLAUDE.md
+
+# Debug
+debug-homebridge.sh
