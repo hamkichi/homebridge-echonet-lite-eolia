@@ -124,3 +124,6 @@ dist
 .idea
 
 /test/hbConfig
+
+# Claude
+CLAUDE.md
