@@ -592,12 +592,20 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       this.log.debug('Received EchoNet-Lite message from', rinfo.address, ':', els);
     }
     
+    // TEMPORARY DEBUG: Check ESV value type and format
+    this.log.warn(`DEBUG ESV - Value: ${els.ESV}, Type: ${typeof els.ESV}, Hex: 0x${els.ESV?.toString(16)}, String: '${els.ESV}'`);
+    
     // Track unmatched responses to detect potential issues
     let hasMatchedRequests = false;
     
     // Check if this is a response to a pending request
-    if ((els.ESV === 0x72 || els.ESV === 0x71) && els.DETAILs) { // GET_RES or SET_RES
-      const responseType = els.ESV === 0x72 ? 'GET_RES' : 'SET_RES';
+    // Support both string and numeric ESV values for compatibility
+    const esvValue = els.ESV as unknown;
+    const isGetRes = esvValue === 0x72 || esvValue === '72';
+    const isSetRes = esvValue === 0x71 || esvValue === '71';
+    
+    if ((isGetRes || isSetRes) && els.DETAILs) { // GET_RES or SET_RES
+      const responseType = isGetRes ? 'GET_RES' : 'SET_RES';
       
       for (const [epc, value] of Object.entries(els.DETAILs)) {
         // Find the most recent pending request for this device/EPC combination
@@ -626,7 +634,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
           this.log.debug(`Resolved ${responseType} for ${rinfo.address} EPC ${epc}: ${value}`);
           this.pendingRequests.delete(mostRecentKey);
           // For GET_RES, pass the value; for SET_RES, just resolve (void)
-          if (els.ESV === 0x72) {
+          if (isGetRes) {
             mostRecentRequest.resolve(value);
           } else {
             mostRecentRequest.resolve('');
@@ -642,7 +650,8 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     }
     
     // Handle INF notifications (external operations)
-    if (els.ESV === 0x73 && els.DETAILs && els.SEOJ && els.SEOJ.startsWith('0130')) {
+    const isInfNotification = esvValue === 0x73 || esvValue === '73';
+    if (isInfNotification && els.DETAILs && els.SEOJ && els.SEOJ.startsWith('0130')) {
       // Track INF notification reception
       const deviceKey = `${rinfo.address}_${els.SEOJ}`;
       const currentCount = this.infNotificationCount.get(deviceKey) || 0;
