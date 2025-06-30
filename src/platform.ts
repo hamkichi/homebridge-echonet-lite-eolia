@@ -592,8 +592,6 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       this.log.debug('Received EchoNet-Lite message from', rinfo.address, ':', els);
     }
     
-    // TEMPORARY DEBUG: Check ESV value type and format
-    this.log.warn(`DEBUG ESV - Value: ${els.ESV}, Type: ${typeof els.ESV}, Hex: 0x${els.ESV?.toString(16)}, String: '${els.ESV}'`);
     
     // Track unmatched responses to detect potential issues
     let hasMatchedRequests = false;
