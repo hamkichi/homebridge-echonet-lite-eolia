@@ -4,12 +4,12 @@
 
 // Request timing constants
 export const REQUEST_TIMING = {
-  MIN_DEVICE_INTERVAL_MS: 300,      // Minimum interval between requests to same device
+  MIN_DEVICE_INTERVAL_MS: 800,      // Minimum interval between requests to same device
   REQUEST_QUEUE_DELAY_MS: 100,      // Delay between queued requests
   CACHE_TIMEOUT_MS: 2000,           // Cache validity timeout
   QUICK_TIMEOUT_MS: 800,            // Quick timeout for HomeKit responsiveness
-  STANDARD_TIMEOUT_MS: 1000,        // Standard timeout for requests
-  LONG_TIMEOUT_MS: 3000,            // Long timeout for setup operations
+  STANDARD_TIMEOUT_MS: 2000,        // Standard timeout for requests
+  LONG_TIMEOUT_MS: 5000,            // Long timeout for setup operations
   INF_REFRESH_DELAY_MS: 500,        // Delay before refreshing state after INF
   HOMEKIT_UPDATE_INTERVAL_MS: 50,   // Interval between HomeKit characteristic updates
   VERIFICATION_DELAY_MS: 200,       // Delay before verification

@@ -382,9 +382,10 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     
     return new Promise((resolve, reject) => {
       try {
-        // Create unique request key based on timestamp and device
+        // Create unique request key based on timestamp, device, and random element
         const timestamp = Date.now();
-        const requestKey = `${ip}_${eoj}_multi_${timestamp}`;
+        const randomSuffix = Math.random().toString(36).substring(2, 8);
+        const requestKey = `${ip}_${eoj}_multi_${timestamp}_${randomSuffix}`;
         
         this.log.debug(`Sending multi-EPC request to ${ip} for EPCs: ${epcs.join(', ')}, key: ${requestKey}`);
         
@@ -397,7 +398,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
         // Store request for matching response
         const expectedResults: Record<string, string> = {};
         epcs.forEach(epc => {
-          const epcRequestKey = `${ip}_${eoj}_${epc}_${timestamp}`;
+          const epcRequestKey = `${ip}_${eoj}_${epc}_${timestamp}_${randomSuffix}`;
           this.pendingRequests.set(epcRequestKey, {
             resolve: (value: unknown) => {
               expectedResults[epc] = value as string;
@@ -424,7 +425,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
         setTimeout(() => {
           let hasUnresolved = false;
           epcs.forEach(epc => {
-            const epcRequestKey = `${ip}_${eoj}_${epc}_${timestamp}`;
+            const epcRequestKey = `${ip}_${eoj}_${epc}_${timestamp}_${randomSuffix}`;
             if (this.pendingRequests.has(epcRequestKey)) {
               this.pendingRequests.delete(epcRequestKey);
               hasUnresolved = true;
@@ -432,9 +433,15 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
           });
           
           if (hasUnresolved) {
-            const error = new Error(`Timeout waiting for multi-response from ${ip} for EPCs ${epcs.join(', ')}`);
-            this.log.warn(`Multi-request timeout: ${requestKey}`);
-            reject(error);
+            // Return partial results if any EPCs succeeded
+            if (Object.keys(expectedResults).length > 0) {
+              this.log.warn(`Multi-request partial timeout: ${requestKey}, got ${Object.keys(expectedResults).length}/${epcs.length} responses`);
+              resolve(expectedResults);
+            } else {
+              const error = new Error(`Timeout waiting for multi-response from ${ip} for EPCs ${epcs.join(', ')}`);
+              this.log.warn(`Multi-request complete timeout: ${requestKey}`);
+              reject(error);
+            }
           }
         }, 3000); // 3 second timeout for multi-requests
         
@@ -460,9 +467,10 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     
     return new Promise((resolve, reject) => {
       try {
-        // Create unique request key based on timestamp and device
+        // Create unique request key based on timestamp, device, and random element
         const timestamp = Date.now();
-        const requestKey = `${ip}_${eoj}_${epc}_${timestamp}`;
+        const randomSuffix = Math.random().toString(36).substring(2, 8);
+        const requestKey = `${ip}_${eoj}_${epc}_${timestamp}_${randomSuffix}`;
         
         this.log.debug(`Sending EPC ${epc} to ${ip}, key: ${requestKey}`);
         
@@ -593,6 +601,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       
       for (const [epc, value] of Object.entries(els.DETAILs)) {
         // Find the most recent pending request for this device/EPC combination
+        // Try exact key match first (more precise), then fallback to timestamp-based matching
         let mostRecentRequest = null;
         let mostRecentKey = null;
         let mostRecentTime = 0;
@@ -600,11 +609,15 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
         for (const [key, request] of this.pendingRequests.entries()) {
           if (request.ip === rinfo.address && 
               request.eoj === els.SEOJ && 
-              request.epc === epc &&
-              request.timestamp > mostRecentTime) {
-            mostRecentRequest = request;
-            mostRecentKey = key;
-            mostRecentTime = request.timestamp;
+              request.epc === epc) {
+            // Prefer exact key pattern match if available
+            if (key.includes(`${rinfo.address}_${els.SEOJ}_${epc}_`)) {
+              if (request.timestamp > mostRecentTime) {
+                mostRecentRequest = request;
+                mostRecentKey = key;
+                mostRecentTime = request.timestamp;
+              }
+            }
           }
         }
         
