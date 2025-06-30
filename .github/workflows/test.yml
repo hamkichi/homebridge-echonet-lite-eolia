@@ -1,0 +1,197 @@
+name: Test and Build
+
+on:
+  push:
+    branches: [ main, develop, v* ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    name: Test on Node.js ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run ESLint
+      run: npm run lint
+    
+    - name: Run tests
+      run: npm run test:coverage
+    
+    - name: Upload coverage to Codecov
+      if: matrix.node-version == 20  # Only upload coverage from one Node version
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage/lcov.info
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+    
+    - name: Build TypeScript
+      run: npm run build
+    
+    - name: Test build output
+      run: |
+        if [ ! -f "dist/index.js" ]; then
+          echo "Build output missing!"
+          exit 1
+        fi
+        echo "Build successful - dist/index.js exists"
+
+  test-homebridge-compatibility:
+    name: Test Homebridge Compatibility
+    runs-on: ubuntu-latest
+    needs: test
+    
+    strategy:
+      matrix:
+        homebridge-version: ['1.8.0', '2.0.0-beta.0']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Install Homebridge ${{ matrix.homebridge-version }}
+      run: npm install --no-save homebridge@${{ matrix.homebridge-version }}
+    
+    - name: Build plugin
+      run: npm run build
+    
+    - name: Test plugin loading
+      run: |
+        node -e "
+        try {
+          const plugin = require('./dist/index.js');
+          if (typeof plugin.default === 'function') {
+            console.log('✅ Plugin exports valid function');
+          } else {
+            console.error('❌ Plugin does not export function');
+            process.exit(1);
+          }
+        } catch (error) {
+          console.error('❌ Plugin failed to load:', error.message);
+          process.exit(1);
+        }
+        "
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run npm audit
+      run: npm audit --audit-level=moderate
+    
+    - name: Check for known vulnerabilities
+      run: |
+        # Check for any high/critical vulnerabilities
+        if npm audit --audit-level=high --json | grep -q '"level":"high"'; then
+          echo "❌ High severity vulnerabilities found!"
+          npm audit --audit-level=high
+          exit 1
+        else
+          echo "✅ No high severity vulnerabilities found"
+        fi
+
+  release-check:
+    name: Release Readiness Check
+    runs-on: ubuntu-latest
+    needs: [test, test-homebridge-compatibility, security-scan]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Verify package.json
+      run: |
+        # Check required fields
+        node -e "
+        const pkg = require('./package.json');
+        const required = ['name', 'version', 'description', 'main', 'engines', 'keywords'];
+        const missing = required.filter(field => !pkg[field]);
+        if (missing.length > 0) {
+          console.error('❌ Missing required package.json fields:', missing.join(', '));
+          process.exit(1);
+        }
+        console.log('✅ Package.json is valid for publishing');
+        "
+    
+    - name: Check version consistency
+      run: |
+        # Verify version in settings.ts matches package.json
+        PACKAGE_VERSION=$(node -p "require('./package.json').version")
+        SETTINGS_VERSION=$(node -p "require('./dist/settings.js').VERSION")
+        
+        if [ "$PACKAGE_VERSION" != "$SETTINGS_VERSION" ]; then
+          echo "❌ Version mismatch: package.json ($PACKAGE_VERSION) != settings.ts ($SETTINGS_VERSION)"
+          exit 1
+        fi
+        
+        echo "✅ Version consistency check passed: $PACKAGE_VERSION"
+    
+    - name: Validate README and documentation
+      run: |
+        if [ ! -f "README.md" ]; then
+          echo "⚠️  README.md not found - consider adding documentation"
+        else
+          echo "✅ README.md exists"
+        fi
+        
+        if [ ! -f "CHANGELOG.md" ]; then
+          echo "⚠️  CHANGELOG.md not found - consider adding changelog"
+        else
+          echo "✅ CHANGELOG.md exists"
+        fi
+    
+    - name: Test package preparation
+      run: |
+        # Test that the package can be prepared for publishing
+        npm run prepublishOnly
+        echo "✅ Package is ready for publishing"

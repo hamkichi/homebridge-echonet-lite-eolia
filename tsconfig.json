@@ -16,7 +16,8 @@
     "strict": true,
     "esModuleInterop": true,
     "moduleResolution": "node16",
-    "noImplicitAny": false
+    "noImplicitAny": false,
+    "isolatedModules": true
   },
   "include": [
     "src/"

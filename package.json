@@ -26,7 +26,10 @@
   "scripts": {
     "build": "rimraf ./dist && tsc",
     "lint": "eslint . --max-warnings=0",
-    "prepublishOnly": "npm run lint && npm run build",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "prepublishOnly": "npm run lint && npm run test && npm run build",
     "watch": "npm run build && npm link && nodemon"
   },
   "dependencies": {
@@ -37,11 +40,15 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.21.0",
+    "@jest/globals": "^30.0.3",
+    "@types/jest": "^30.0.0",
     "@types/node": "^22.13.5",
     "eslint": "^9.21.0",
     "homebridge": "^2.0.0-beta.0",
+    "jest": "^30.0.3",
     "nodemon": "^3.1.9",
     "rimraf": "^6.0.1",
+    "ts-jest": "^29.4.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.24.1"
