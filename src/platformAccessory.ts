@@ -1,8 +1,8 @@
 import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
 
-import { EoliaPlatform } from './platform';
+import { EoliaPlatform } from './platform.js';
 import { promisify } from 'util';
-import { JobQueue } from './jobQueue';
+import { JobQueue } from './jobQueue.js';
 
 /**
  * Platform Accessory

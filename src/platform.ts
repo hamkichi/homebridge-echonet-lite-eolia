@@ -1,7 +1,7 @@
 import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
 
-import { PLATFORM_NAME, PLUGIN_NAME, VERSION } from './settings';
-import { EoliaPlatformAccessory } from './platformAccessory';
+import { PLATFORM_NAME, PLUGIN_NAME, VERSION } from './settings.js';
+import { EoliaPlatformAccessory } from './platformAccessory.js';
 
 import EchonetLite from 'node-echonet-lite';
 import { promisify } from 'util';

@@ -121,3 +121,8 @@ dist
 
 # .DS_Store
 .DS_Store
+
+# CLAUDE
+CLAUDE.md
+debug-homebridge.sh
+todo/*

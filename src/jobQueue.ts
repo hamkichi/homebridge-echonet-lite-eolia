@@ -1,4 +1,6 @@
-import queue from 'queue';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const queue = require('queue');
 
 export class JobQueue {
   private theQueue;
@@ -11,7 +13,6 @@ export class JobQueue {
     this.theQueue.on('error', this.onJobFailed.bind(this));
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async addJob(job): Promise<any> {
     this.theQueue.push(job);
     return new Promise((resolve, reject) => {
