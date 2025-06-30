@@ -312,12 +312,9 @@ export class EoliaPlatformAccessory {
   /**
    * Promisified Echonet.getPropertyValue
    */
-  async getPropertyValue(address, eoj, edt) {
-    const propertyValue = await this.jobQueue.addJob(() => {
-      return new Promise(resolve => {
-        const result = promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
-        resolve(result);
-      });
+  async getPropertyValue(address: string, eoj: number[], edt: number) {
+    const propertyValue = await this.jobQueue.addJob(async () => {
+      return await promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
     });
     return propertyValue;
   }
@@ -325,12 +322,9 @@ export class EoliaPlatformAccessory {
   /**
    * Promisified Echonet.setPropertyValue
    */
-  async setPropertyValue(address, eoj, edt, value){
-    await this.jobQueue.addJob(() => {
-      return new Promise<void>(resolve => {
-        promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
-        resolve();
-      });
+  async setPropertyValue(address: string, eoj: number[], edt: number, value: any){
+    await this.jobQueue.addJob(async () => {
+      await promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
     });
   }
 
