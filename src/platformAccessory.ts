@@ -18,9 +18,10 @@ export class AirConditionerAccessory {
   private airconStates = {
     Active: false, // Will be updated from device
     CurrentTemperature: 20, // Reasonable default
-    TargetTemperature: 24, // More reasonable default for AC
-    CurrentHeatingCoolingState: 0, // Will be updated from device
-    TargetHeatingCoolingState: 0, // Will be updated from device
+    HeatingThresholdTemperature: 24, // Heating threshold temperature
+    CoolingThresholdTemperature: 24, // Cooling threshold temperature
+    CurrentHeaterCoolerState: 0, // Will be updated from device
+    TargetHeaterCoolerState: 0, // Will be updated from device
   };
 
   // Track if initial state has been loaded from device
@@ -30,7 +31,8 @@ export class AirConditionerAccessory {
   private lastUpdateTime = {
     operationState: 0,
     currentTemperature: 0,
-    targetTemperature: 0,
+    heatingThresholdTemperature: 0,
+    coolingThresholdTemperature: 0,
     operationMode: 0,
   };
   private cacheTimeout = REQUEST_TIMING.CACHE_TIMEOUT_MS; // Cache timeout for Homebridge compatibility
@@ -46,32 +48,47 @@ export class AirConditionerAccessory {
       .setCharacteristic(this.platform.Characteristic.Model, device.model || 'Air Conditioner')
       .setCharacteristic(this.platform.Characteristic.SerialNumber, device.serialNumber || device.deviceId);
 
-    // get the Thermostat service if it exists, otherwise create a new Thermostat service
-    this.service = this.accessory.getService(this.platform.Service.Thermostat) || 
-                  this.accessory.addService(this.platform.Service.Thermostat);
+    // get the HeaterCooler service if it exists, otherwise create a new HeaterCooler service
+    this.service = this.accessory.getService(this.platform.Service.HeaterCooler) || 
+                  this.accessory.addService(this.platform.Service.HeaterCooler);
 
     // set the service name
     this.service.setCharacteristic(this.platform.Characteristic.Name, accessory.displayName);
 
-    // register handlers for the thermostat characteristics
+    // register handlers for the heater cooler characteristics
     
-    // Current Heating Cooling State (read-only)
-    this.service.getCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState)
-      .onGet(this.getCurrentHeatingCoolingState.bind(this));
+    // Current Heater Cooler State (read-only)
+    this.service.getCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState)
+      .onGet(this.getCurrentHeaterCoolerState.bind(this));
 
-    // Target Heating Cooling State
-    this.service.getCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState)
-      .onSet(this.setTargetHeatingCoolingState.bind(this))
-      .onGet(this.getTargetHeatingCoolingState.bind(this));
+    // Target Heater Cooler State
+    this.service.getCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState)
+      .onSet(this.setTargetHeaterCoolerState.bind(this))
+      .onGet(this.getTargetHeaterCoolerState.bind(this));
 
     // Current Temperature (read-only)
     this.service.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
       .onGet(this.getCurrentTemperature.bind(this));
 
-    // Target Temperature
-    this.service.getCharacteristic(this.platform.Characteristic.TargetTemperature)
-      .onSet(this.setTargetTemperature.bind(this))
-      .onGet(this.getTargetTemperature.bind(this));
+    // Heating Threshold Temperature
+    this.service.getCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature)
+      .onSet(this.setHeatingThresholdTemperature.bind(this))
+      .onGet(this.getHeatingThresholdTemperature.bind(this))
+      .setProps({
+        minValue: 10,
+        maxValue: 38,
+        minStep: 1,
+      });
+
+    // Cooling Threshold Temperature
+    this.service.getCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature)
+      .onSet(this.setCoolingThresholdTemperature.bind(this))
+      .onGet(this.getCoolingThresholdTemperature.bind(this))
+      .setProps({
+        minValue: 10,
+        maxValue: 38,
+        minStep: 1,
+      });
 
     // Active (ON/OFF state) - This is crucial for iOS Home app
     this.service.getCharacteristic(this.platform.Characteristic.Active)
@@ -116,14 +133,14 @@ export class AirConditionerAccessory {
           if (typeof opState === 'object' && 'isOn' in opState && 'mode' in opState) {
             const { isOn, mode } = opState;
             if (mode > 0 || isOn) { // Only update if we got meaningful data
-              this.airconStates.TargetHeatingCoolingState = isOn ? mode : 0;
+              this.airconStates.TargetHeaterCoolerState = isOn ? mode : 0;
               // Handle AUTO mode for CurrentHeatingCoolingState (doesn't support value 3)
               let currentMode = mode;
               if (mode === 3) { // AUTO mode
                 // Default to Cool for AUTO mode when we don't have temperature data
                 currentMode = 2;
               }
-              this.airconStates.CurrentHeatingCoolingState = isOn ? currentMode : 0;
+              this.airconStates.CurrentHeaterCoolerState = isOn ? currentMode : 0;
               stateUpdated = true;
               this.platform.log.debug(`Loaded operation state for ${this.accessory.displayName}: ${isOn ? 'ON' : 'OFF'}, mode: ${mode}`);
             }
@@ -137,7 +154,8 @@ export class AirConditionerAccessory {
         }
         
         if (targetTemp.status === 'fulfilled' && typeof targetTemp.value === 'number') {
-          this.airconStates.TargetTemperature = targetTemp.value;
+          this.airconStates.HeatingThresholdTemperature = targetTemp.value;
+          this.airconStates.CoolingThresholdTemperature = targetTemp.value;
           stateUpdated = true;
         }
         
@@ -146,11 +164,12 @@ export class AirConditionerAccessory {
           this.platform.log.info(`Successfully loaded initial state for ${this.accessory.displayName}`);
           
           // Update HomeKit characteristics with loaded state
-          this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState, this.airconStates.CurrentHeatingCoolingState);
-          this.service.updateCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState, this.airconStates.TargetHeatingCoolingState);
+          this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState, this.airconStates.CurrentHeaterCoolerState);
+          this.service.updateCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState, this.airconStates.TargetHeaterCoolerState);
           this.service.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, this.airconStates.CurrentTemperature);
-          this.service.updateCharacteristic(this.platform.Characteristic.TargetTemperature, this.airconStates.TargetTemperature);
-          this.service.updateCharacteristic(this.platform.Characteristic.Active, this.airconStates.TargetHeatingCoolingState > 0 ? 1 : 0);
+          this.service.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, this.airconStates.HeatingThresholdTemperature);
+          this.service.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, this.airconStates.CoolingThresholdTemperature);
+          this.service.updateCharacteristic(this.platform.Characteristic.Active, this.airconStates.TargetHeaterCoolerState > 0 ? 1 : 0);
         }
         
       } catch (error) {
@@ -160,24 +179,33 @@ export class AirConditionerAccessory {
   }
 
   /**
-   * Handle "SET" requests for Target Heating Cooling State
+   * Handle "SET" requests for Target Heater Cooler State
    */
-  async setTargetHeatingCoolingState(value: CharacteristicValue) {
+  async setTargetHeaterCoolerState(value: CharacteristicValue) {
     const state = value as number;
-    this.airconStates.TargetHeatingCoolingState = state;
-    this.platform.log.debug('Set Target Heating Cooling State ->', state);
+    this.airconStates.TargetHeaterCoolerState = state;
+    this.platform.log.debug('Set Target Heater Cooler State ->', state);
 
     try {
       const device = this.accessory.context.device;
       
       if (state === 0) {
-        // Turn OFF
+        // Turn OFF (INACTIVE)
         await this.platform.setOperationState(device, false);
         this.platform.log.debug('Air conditioner turned OFF');
       } else {
         // Turn ON and set mode (1=HEAT, 2=COOL, 3=AUTO)
         await this.platform.setOperationState(device, true);
-        await this.platform.setOperationMode(device, state);
+        
+        // Map HeaterCooler states to EchoNet modes
+        let echoNetMode = 2; // Default to cool
+        switch (state) {
+        case 1: echoNetMode = 1; break; // HEAT
+        case 2: echoNetMode = 2; break; // COOL
+        case 3: echoNetMode = 3; break; // AUTO
+        }
+        
+        await this.platform.setOperationMode(device, echoNetMode);
         this.platform.log.debug(`Air conditioner turned ON with mode ${state}`);
       }
       
@@ -185,20 +213,12 @@ export class AirConditionerAccessory {
       this.lastUpdateTime.operationState = Date.now();
       this.lastUpdateTime.operationMode = Date.now();
       
-      // Immediately update CurrentHeatingCoolingState to reflect the change
-      // Handle AUTO mode for CurrentHeatingCoolingState (doesn't support value 3)
-      let currentState = state;
-      if (state === 3) { // AUTO mode
-        // Use temperature data to determine actual heating/cooling state
-        const currentTemp = this.airconStates.CurrentTemperature;
-        const targetTemp = this.airconStates.TargetTemperature;
-        currentState = (targetTemp > currentTemp) ? 1 : 2; // Heat : Cool
-      }
-      this.airconStates.CurrentHeatingCoolingState = currentState;
+      // Immediately update CurrentHeaterCoolerState to reflect the change
+      this.airconStates.CurrentHeaterCoolerState = state;
       
       // Notify HomeKit of the state change immediately
-      this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState, currentState);
-      this.service.updateCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState, state);
+      this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState, state);
+      this.service.updateCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState, state);
       this.service.updateCharacteristic(this.platform.Characteristic.Active, state > 0 ? 1 : 0);
       
       this.platform.log.debug(`HomeKit characteristics updated immediately: Current=${state}, Target=${state}`);
@@ -209,9 +229,9 @@ export class AirConditionerAccessory {
       }, REQUEST_TIMING.STANDARD_TIMEOUT_MS); // Verify after delay
       
     } catch (error) {
-      this.platform.log.error('Failed to set heating/cooling state:', error);
+      this.platform.log.error('Failed to set heater/cooler state:', error);
       // Revert state on error
-      this.airconStates.TargetHeatingCoolingState = state === 0 ? 1 : 0;
+      this.airconStates.TargetHeaterCoolerState = state === 0 ? 1 : 0;
       throw error;
     }
   }
@@ -223,8 +243,8 @@ export class AirConditionerAccessory {
     // Return cached values if still valid
     if (this.isCacheValid('operationState') && this.isCacheValid('operationMode')) {
       return {
-        isOn: this.airconStates.TargetHeatingCoolingState > 0,
-        mode: this.airconStates.TargetHeatingCoolingState,
+        isOn: this.airconStates.TargetHeaterCoolerState > 0,
+        mode: this.airconStates.TargetHeaterCoolerState,
       };
     }
 
@@ -257,7 +277,7 @@ export class AirConditionerAccessory {
       if (isOn && mode === 3) { // AUTO mode
         // Get temperature data from cache with validation
         let currentTemp = this.airconStates.CurrentTemperature;
-        let targetTemp = this.airconStates.TargetTemperature;
+        let targetTemp = this.airconStates.HeatingThresholdTemperature;
         
         // eslint-disable-next-line dot-notation
         if (platformCache['bb']) {
@@ -290,8 +310,8 @@ export class AirConditionerAccessory {
       this.lastUpdateTime.operationMode = Date.now();
       
       // Update local state cache
-      this.airconStates.TargetHeatingCoolingState = isOn ? mode : 0;
-      this.airconStates.CurrentHeatingCoolingState = isOn ? currentMode : 0;
+      this.airconStates.TargetHeaterCoolerState = isOn ? mode : 0;
+      this.airconStates.CurrentHeaterCoolerState = isOn ? currentMode : 0;
       
       this.platform.log.debug(`Using platform cache for ${this.accessory.displayName}: ${isOn ? 'ON' : 'OFF'}, mode: ${mode}`);
       return { isOn, mode };
@@ -313,11 +333,11 @@ export class AirConditionerAccessory {
   }
 
   /**
-   * Handle "GET" requests for Target Heating Cooling State
+   * Handle "GET" requests for Target Heater Cooler State
    */
-  async getTargetHeatingCoolingState(): Promise<CharacteristicValue> {
+  async getTargetHeaterCoolerState(): Promise<CharacteristicValue> {
     // Return cached value immediately if available
-    const cachedValue = this.airconStates.TargetHeatingCoolingState;
+    const cachedValue = this.airconStates.TargetHeaterCoolerState;
     
     try {
       const device = this.accessory.context.device;
@@ -331,8 +351,8 @@ export class AirConditionerAccessory {
       ]);
       
       const state = result.isOn ? result.mode : 0;
-      this.airconStates.TargetHeatingCoolingState = state;
-      this.platform.log.debug('Get Target Heating Cooling State (fresh) ->', state);
+      this.airconStates.TargetHeaterCoolerState = state;
+      this.platform.log.debug('Get Target Heater Cooler State (fresh) ->', state);
       return state;
       
     } catch (error) {
@@ -342,11 +362,11 @@ export class AirConditionerAccessory {
   }
 
   /**
-   * Handle "GET" requests for Current Heating Cooling State
+   * Handle "GET" requests for Current Heater Cooler State
    */
-  async getCurrentHeatingCoolingState(): Promise<CharacteristicValue> {
+  async getCurrentHeaterCoolerState(): Promise<CharacteristicValue> {
     // Return cached value immediately if available
-    const cachedValue = this.airconStates.CurrentHeatingCoolingState;
+    const cachedValue = this.airconStates.CurrentHeaterCoolerState;
     
     try {
       const device = this.accessory.context.device;
@@ -359,39 +379,9 @@ export class AirConditionerAccessory {
         ),
       ]);
       
-      // Handle AUTO mode for CurrentHeatingCoolingState
-      let state = result.isOn ? result.mode : 0;
-      if (state === 3) { // AUTO mode
-        const device = this.accessory.context.device;
-        const deviceKey = `${device.ip}_${device.eoj}`;
-        const platformCache = this.platform.getDeviceStateCache(deviceKey);
-        
-        // Get temperature data with validation
-        let currentTemp = this.airconStates.CurrentTemperature;
-        let targetTemp = this.airconStates.TargetTemperature;
-        
-        // eslint-disable-next-line dot-notation
-        if (platformCache?.['bb']) {
-          // eslint-disable-next-line dot-notation
-          const currentTempValue = parseInt(platformCache['bb'], 16);
-          if (currentTempValue !== 0xFD && currentTempValue !== 0xFE && currentTempValue !== 0xFF) {
-            currentTemp = currentTempValue;
-          }
-        }
-        
-        // eslint-disable-next-line dot-notation
-        if (platformCache?.['b3']) {
-          // eslint-disable-next-line dot-notation
-          const targetTempValue = parseInt(platformCache['b3'], 16);
-          if (targetTempValue !== 0xFD && targetTempValue !== 0xFE && targetTempValue !== 0xFF) {
-            targetTemp = targetTempValue;
-          }
-        }
-        
-        state = (targetTemp > currentTemp) ? 1 : 2; // Heat : Cool
-      }
-      this.airconStates.CurrentHeatingCoolingState = state;
-      this.platform.log.debug('Get Current Heating Cooling State (fresh) ->', state);
+      const state = result.isOn ? result.mode : 0;
+      this.airconStates.CurrentHeaterCoolerState = state;
+      this.platform.log.debug('Get Current Heater Cooler State (fresh) ->', state);
       return state;
       
     } catch (error) {
@@ -401,12 +391,12 @@ export class AirConditionerAccessory {
   }
 
   /**
-   * Handle "SET" requests for Target Temperature
+   * Handle "SET" requests for Heating Threshold Temperature
    */
-  async setTargetTemperature(value: CharacteristicValue) {
+  async setHeatingThresholdTemperature(value: CharacteristicValue) {
     const temperature = value as number;
-    this.airconStates.TargetTemperature = temperature;
-    this.platform.log.debug('Set Target Temperature ->', temperature);
+    this.airconStates.HeatingThresholdTemperature = temperature;
+    this.platform.log.debug('Set Heating Threshold Temperature ->', temperature);
 
     try {
       const device = this.accessory.context.device;
@@ -415,17 +405,18 @@ export class AirConditionerAccessory {
       const clampedTemp = Math.max(16, Math.min(30, Math.round(temperature)));
       if (clampedTemp !== temperature) {
         this.platform.log.warn(`Temperature ${temperature} clamped to ${clampedTemp} (valid range: 16-30°C)`);
-        this.airconStates.TargetTemperature = clampedTemp;
+        this.airconStates.HeatingThresholdTemperature = clampedTemp;
       }
       
       await this.platform.setTargetTemperature(device, clampedTemp);
       this.platform.log.debug(`Target temperature set to ${clampedTemp}°C`);
       
       // Update cache timestamp
-      this.lastUpdateTime.targetTemperature = Date.now();
+      this.lastUpdateTime.heatingThresholdTemperature = Date.now();
       
-      // Immediately update HomeKit characteristic to reflect the change
-      this.service.updateCharacteristic(this.platform.Characteristic.TargetTemperature, clampedTemp);
+      // Immediately update HomeKit characteristics to reflect the change
+      this.service.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, clampedTemp);
+      this.service.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, clampedTemp);
       
       this.platform.log.debug(`HomeKit target temperature characteristic updated immediately: ${clampedTemp}°C`);
       
@@ -442,13 +433,55 @@ export class AirConditionerAccessory {
   }
 
   /**
-   * Handle "GET" requests for Target Temperature
+   * Handle "SET" requests for Cooling Threshold Temperature
    */
-  async getTargetTemperature(): Promise<CharacteristicValue> {
+  async setCoolingThresholdTemperature(value: CharacteristicValue) {
+    const temperature = value as number;
+    this.airconStates.CoolingThresholdTemperature = temperature;
+    this.platform.log.debug('Set Cooling Threshold Temperature ->', temperature);
+
+    try {
+      const device = this.accessory.context.device;
+      
+      // Validate temperature range (typical range for air conditioners)
+      const clampedTemp = Math.max(16, Math.min(30, Math.round(temperature)));
+      if (clampedTemp !== temperature) {
+        this.platform.log.warn(`Temperature ${temperature} clamped to ${clampedTemp} (valid range: 16-30°C)`);
+        this.airconStates.CoolingThresholdTemperature = clampedTemp;
+      }
+      
+      await this.platform.setTargetTemperature(device, clampedTemp);
+      this.platform.log.debug(`Target temperature set to ${clampedTemp}°C`);
+      
+      // Update cache timestamp
+      this.lastUpdateTime.coolingThresholdTemperature = Date.now();
+      
+      // Immediately update HomeKit characteristics to reflect the change
+      this.service.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, clampedTemp);
+      this.service.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, clampedTemp);
+      
+      this.platform.log.debug(`HomeKit target temperature characteristic updated immediately: ${clampedTemp}°C`);
+      
+      // Schedule a verification check after a short delay to ensure device state matches
+      setTimeout(() => {
+        this.verifyTargetTemperatureChange(device, clampedTemp);
+      }, REQUEST_TIMING.STANDARD_TIMEOUT_MS); // Verify after delay
+      
+    } catch (error) {
+      this.platform.log.error('Failed to set target temperature:', error);
+      // Keep the previous temperature value on error
+      throw error;
+    }
+  }
+
+  /**
+   * Handle "GET" requests for Heating Threshold Temperature
+   */
+  async getHeatingThresholdTemperature(): Promise<CharacteristicValue> {
     // Return cached value if still valid
-    if (this.isCacheValid('targetTemperature')) {
-      this.platform.log.debug('Get Target Temperature (cached) ->', this.airconStates.TargetTemperature);
-      return this.airconStates.TargetTemperature;
+    if (this.isCacheValid('heatingThresholdTemperature')) {
+      this.platform.log.debug('Get Heating Threshold Temperature (cached) ->', this.airconStates.HeatingThresholdTemperature);
+      return this.airconStates.HeatingThresholdTemperature;
     }
 
     // Try to use platform-level cache first (from multi-EPC requests)
@@ -466,15 +499,15 @@ export class AirConditionerAccessory {
         const temp = tempValue;
         
         // Update local cache timestamps to prevent immediate re-fetch
-        this.lastUpdateTime.targetTemperature = Date.now();
-        this.airconStates.TargetTemperature = temp;
+        this.lastUpdateTime.heatingThresholdTemperature = Date.now();
+        this.airconStates.HeatingThresholdTemperature = temp;
         
         this.platform.log.debug(`Using platform cache for target temperature: ${temp}°C`);
         return temp;
       }
     }
 
-    const cachedValue = this.airconStates.TargetTemperature;
+    const cachedValue = this.airconStates.HeatingThresholdTemperature;
     
     // Fallback to individual request only if platform cache is not available
     try {
@@ -488,8 +521,66 @@ export class AirConditionerAccessory {
         ),
       ]);
       
-      this.airconStates.TargetTemperature = temp;
-      this.lastUpdateTime.targetTemperature = Date.now();
+      this.airconStates.HeatingThresholdTemperature = temp;
+      this.lastUpdateTime.heatingThresholdTemperature = Date.now();
+      this.platform.log.debug('Get Target Temperature (fresh) ->', temp);
+      return temp;
+      
+    } catch (error) {
+      this.platform.log.debug('Using cached target temperature due to:', error instanceof Error ? error.message : 'unknown error');
+      return cachedValue;
+    }
+  }
+
+  /**
+   * Handle "GET" requests for Cooling Threshold Temperature
+   */
+  async getCoolingThresholdTemperature(): Promise<CharacteristicValue> {
+    // Return cached value if still valid
+    if (this.isCacheValid('coolingThresholdTemperature')) {
+      this.platform.log.debug('Get Cooling Threshold Temperature (cached) ->', this.airconStates.CoolingThresholdTemperature);
+      return this.airconStates.CoolingThresholdTemperature;
+    }
+
+    // Try to use platform-level cache first (from multi-EPC requests)
+    const device = this.accessory.context.device;
+    const deviceKey = `${device.ip}_${device.eoj}`;
+    const platformCache = this.platform.getDeviceStateCache(deviceKey);
+    
+    // eslint-disable-next-line dot-notation
+    if (platformCache && platformCache['b3']) {
+      // eslint-disable-next-line dot-notation
+      const targetTempHex = platformCache['b3'];
+      const tempValue = parseInt(targetTempHex, 16);
+      // Check for EchoNet-Lite special values
+      if (tempValue !== 0xFD && tempValue !== 0xFE && tempValue !== 0xFF) {
+        const temp = tempValue;
+        
+        // Update local cache timestamps to prevent immediate re-fetch
+        this.lastUpdateTime.coolingThresholdTemperature = Date.now();
+        this.airconStates.CoolingThresholdTemperature = temp;
+        
+        this.platform.log.debug(`Using platform cache for target temperature: ${temp}°C`);
+        return temp;
+      }
+    }
+
+    const cachedValue = this.airconStates.CoolingThresholdTemperature;
+    
+    // Fallback to individual request only if platform cache is not available
+    try {
+      this.platform.log.debug('Platform cache unavailable for target temperature, using individual request');
+      
+      // Quick fetch with timeout
+      const temp = await Promise.race([
+        this.platform.getTargetTemperature(device),
+        new Promise<number>((_, reject) => 
+          setTimeout(() => reject(new Error('Quick timeout')), REQUEST_TIMING.STANDARD_TIMEOUT_MS),
+        ),
+      ]);
+      
+      this.airconStates.CoolingThresholdTemperature = temp;
+      this.lastUpdateTime.coolingThresholdTemperature = Date.now();
       this.platform.log.debug('Get Target Temperature (fresh) ->', temp);
       return temp;
       
@@ -595,21 +686,21 @@ export class AirConditionerAccessory {
         this.platform.log.warn(`Operation state mismatch detected! Expected: ${expectedState}, Actual: ${actualState}`);
         
         // Update with actual device state
-        this.airconStates.TargetHeatingCoolingState = actualState;
+        this.airconStates.TargetHeaterCoolerState = actualState;
         
         // Handle AUTO mode for CurrentHeatingCoolingState (doesn't support value 3)
         let currentActualState = actualState;
         if (actualState === 3) { // AUTO mode
           // Use temperature data to determine actual heating/cooling state
           const currentTemp = this.airconStates.CurrentTemperature;
-          const targetTemp = this.airconStates.TargetTemperature;
+          const targetTemp = this.airconStates.HeatingThresholdTemperature;
           currentActualState = (targetTemp > currentTemp) ? 1 : 2; // Heat : Cool
         }
-        this.airconStates.CurrentHeatingCoolingState = currentActualState;
+        this.airconStates.CurrentHeaterCoolerState = currentActualState;
         
         // Notify HomeKit of the corrected state (external device state correction)
-        this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState, currentActualState);
-        this.service.updateCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState, actualState);
+        this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState, currentActualState);
+        this.service.updateCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState, actualState);
         this.service.updateCharacteristic(this.platform.Characteristic.Active, actualState > 0 ? 1 : 0);
         
         this.platform.log.debug(`HomeKit characteristics corrected to actual device state: ${actualState}`);
@@ -632,10 +723,12 @@ export class AirConditionerAccessory {
         this.platform.log.warn(`Target temperature mismatch detected! Expected: ${expectedTemp}°C, Actual: ${actualTemp}°C`);
         
         // Update with actual device state
-        this.airconStates.TargetTemperature = actualTemp;
+        this.airconStates.HeatingThresholdTemperature = actualTemp;
+        this.airconStates.CoolingThresholdTemperature = actualTemp;
         
         // Notify HomeKit of the corrected temperature (external device state correction)
-        this.service.updateCharacteristic(this.platform.Characteristic.TargetTemperature, actualTemp);
+        this.service.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, actualTemp);
+        this.service.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, actualTemp);
         
         this.platform.log.debug(`HomeKit target temperature corrected to actual device state: ${actualTemp}°C`);
       } else {
@@ -650,7 +743,7 @@ export class AirConditionerAccessory {
    * Handle "GET" requests for Active state
    */
   async getActive(): Promise<CharacteristicValue> {
-    const isActive = this.airconStates.TargetHeatingCoolingState > 0;
+    const isActive = this.airconStates.TargetHeaterCoolerState > 0;
     this.platform.log.debug('Get Active ->', isActive ? 1 : 0);
     return isActive ? 1 : 0; // 1 = ACTIVE, 0 = INACTIVE
   }
@@ -667,36 +760,36 @@ export class AirConditionerAccessory {
       
       if (isActive) {
         // Turn ON with last used mode (or default to cool)
-        const lastMode = this.airconStates.TargetHeatingCoolingState || 2; // Default to Cool
+        const lastMode = this.airconStates.TargetHeaterCoolerState || 2; // Default to Cool
         await this.platform.setOperationState(device, true);
         
         // Update states
-        this.airconStates.TargetHeatingCoolingState = lastMode;
+        this.airconStates.TargetHeaterCoolerState = lastMode;
         
-        // Handle AUTO mode for CurrentHeatingCoolingState
+        // Handle AUTO mode for CurrentHeaterCoolerState
         let currentMode = lastMode;
         if (lastMode === 3) { // AUTO mode
           const currentTemp = this.airconStates.CurrentTemperature;
-          const targetTemp = this.airconStates.TargetTemperature;
+          const targetTemp = this.airconStates.HeatingThresholdTemperature;
           currentMode = (targetTemp > currentTemp) ? 1 : 2; // Heat : Cool
         }
-        this.airconStates.CurrentHeatingCoolingState = currentMode;
+        this.airconStates.CurrentHeaterCoolerState = currentMode;
         
         // Update HomeKit characteristics
-        this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState, currentMode);
-        this.service.updateCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState, lastMode);
+        this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState, currentMode);
+        this.service.updateCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState, lastMode);
         
       } else {
         // Turn OFF
         await this.platform.setOperationState(device, false);
         
         // Update states
-        this.airconStates.TargetHeatingCoolingState = 0;
-        this.airconStates.CurrentHeatingCoolingState = 0;
+        this.airconStates.TargetHeaterCoolerState = 0;
+        this.airconStates.CurrentHeaterCoolerState = 0;
         
         // Update HomeKit characteristics
-        this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState, 0);
-        this.service.updateCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState, 0);
+        this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState, 0);
+        this.service.updateCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState, 0);
       }
       
       this.platform.log.debug(`Active state successfully set to: ${isActive ? 'ACTIVE' : 'INACTIVE'}`);

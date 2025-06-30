@@ -1119,9 +1119,9 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
    * Update HomeKit characteristics when device state changes
    */
   private updateAccessoryCharacteristics(accessory: PlatformAccessory, details: DeviceStateDetails, deviceId?: string): void {
-    const service = accessory.getService(this.Service.Thermostat);
+    const service = accessory.getService(this.Service.HeaterCooler);
     if (!service) {
-      this.log.warn(`No Thermostat service found for accessory ${accessory.displayName}`);
+      this.log.warn(`No HeaterCooler service found for accessory ${accessory.displayName}`);
       return;
     }
 
@@ -1187,14 +1187,14 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     const isOn = value === '30'; // 0x30 = ON
     this.log.info(`External operation status change: ${isOn ? 'ON' : 'OFF'}`);
     
-    // Update both current and target heating cooling state (external change notification)
+    // Update both current and target heater cooler state (external change notification)
     const state = isOn ? 2 : 0; // Default to cooling when ON, OFF when not
     
     this.log.debug(`📱 Updating HomeKit operation status: CurrentState=${state}, TargetState=${state}`);
     
     // Primary update - use updateCharacteristic to ensure HomeKit app notification
-    service.updateCharacteristic(this.Characteristic.CurrentHeatingCoolingState, state);
-    service.updateCharacteristic(this.Characteristic.TargetHeatingCoolingState, state);
+    service.updateCharacteristic(this.Characteristic.CurrentHeaterCoolerState, state);
+    service.updateCharacteristic(this.Characteristic.TargetHeaterCoolerState, state);
     // Update Active characteristic as well
     service.updateCharacteristic(this.Characteristic.Active, state > 0 ? 1 : 0);
     
@@ -1242,8 +1242,8 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     }
     
     // Update using updateCharacteristic to ensure HomeKit app notification
-    service.updateCharacteristic(this.Characteristic.CurrentHeatingCoolingState, currentMode);
-    service.updateCharacteristic(this.Characteristic.TargetHeatingCoolingState, homeKitMode);
+    service.updateCharacteristic(this.Characteristic.CurrentHeaterCoolerState, currentMode);
+    service.updateCharacteristic(this.Characteristic.TargetHeaterCoolerState, homeKitMode);
     
     this.log.debug(`📱 HomeKit operation mode updated: Current=${currentMode}, Target=${homeKitMode}`);
   }
@@ -1318,7 +1318,8 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     this.log.debug(`📱 Updating HomeKit target temperature: ${temperature}°C`);
     
     // Update using updateCharacteristic to ensure HomeKit app notification
-    service.updateCharacteristic(this.Characteristic.TargetTemperature, temperature);
+    service.updateCharacteristic(this.Characteristic.CoolingThresholdTemperature, temperature);
+    service.updateCharacteristic(this.Characteristic.HeatingThresholdTemperature, temperature);
     
     this.log.debug(`📱 HomeKit target temperature updated: ${temperature}°C`);
   }
@@ -1739,7 +1740,7 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
    * Verify HomeKit synchronization after updates
    */
   private verifyHomeKitSync(accessory: PlatformAccessory, expectedDetails: DeviceStateDetails): void {
-    const service = accessory.getService(this.Service.Thermostat);
+    const service = accessory.getService(this.Service.HeaterCooler);
     if (!service) {
       return;
     }
@@ -1751,14 +1752,14 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
     // Check operation status sync
     if (expectedDetails['80']) {
       const expectedState = expectedDetails['80'] === '30' ? 2 : 0;
-      const currentState = service.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState).value;
-      const targetState = service.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).value;
+      const currentState = service.getCharacteristic(this.Characteristic.CurrentHeaterCoolerState).value;
+      const targetState = service.getCharacteristic(this.Characteristic.TargetHeaterCoolerState).value;
       
       if (currentState !== expectedState || targetState !== expectedState) {
         this.log.warn(`❌ HomeKit sync issue - Operation State: expected=${expectedState}, current=${currentState}, target=${targetState}`);
         // Force resync using updateCharacteristic
-        service.updateCharacteristic(this.Characteristic.CurrentHeatingCoolingState, expectedState);
-        service.updateCharacteristic(this.Characteristic.TargetHeatingCoolingState, expectedState);
+        service.updateCharacteristic(this.Characteristic.CurrentHeaterCoolerState, expectedState);
+        service.updateCharacteristic(this.Characteristic.TargetHeaterCoolerState, expectedState);
         service.updateCharacteristic(this.Characteristic.Active, expectedState > 0 ? 1 : 0);
         syncIssues++;
       }
@@ -1773,16 +1774,18 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       
       const rawTemp = parseInt(expectedDetails.b3, 16);
       const expectedTemp = this.clampToHomeKitRange(rawTemp, 'TargetTemperature');
-      const currentTemp = service.getCharacteristic(this.Characteristic.TargetTemperature).value as number;
+      const coolingTemp = service.getCharacteristic(this.Characteristic.CoolingThresholdTemperature).value as number;
+      const heatingTemp = service.getCharacteristic(this.Characteristic.HeatingThresholdTemperature).value as number;
       
       if (rawTemp !== expectedTemp) {
         this.log.warn(`Target temperature ${rawTemp}°C is invalid (EchoNet special value or out of range), skipping sync`);
         return;
       }
       
-      if (Math.abs(currentTemp - expectedTemp) > 0.5) {
-        this.log.warn(`❌ HomeKit sync issue - Target Temperature: expected=${expectedTemp}°C, current=${currentTemp}°C`);
-        service.updateCharacteristic(this.Characteristic.TargetTemperature, expectedTemp);
+      if (Math.abs(coolingTemp - expectedTemp) > 0.5 || Math.abs(heatingTemp - expectedTemp) > 0.5) {
+        this.log.warn(`❌ HomeKit sync issue - Target Temperature: expected=${expectedTemp}°C, cooling=${coolingTemp}°C, heating=${heatingTemp}°C`);
+        service.updateCharacteristic(this.Characteristic.CoolingThresholdTemperature, expectedTemp);
+        service.updateCharacteristic(this.Characteristic.HeatingThresholdTemperature, expectedTemp);
         syncIssues++;
       }
     }
@@ -1826,9 +1829,9 @@ export class EchoNetLiteAirconPlatform implements DynamicPlatformPlugin {
       if (details['80']) {
         shouldBeActive = details['80'] === '30'; // 0x30 = ON
       } else {
-        // Fallback: check current heating/cooling state
-        const currentState = service.getCharacteristic(this.Characteristic.CurrentHeatingCoolingState).value as number;
-        const targetState = service.getCharacteristic(this.Characteristic.TargetHeatingCoolingState).value as number;
+        // Fallback: check current heater cooler state
+        const currentState = service.getCharacteristic(this.Characteristic.CurrentHeaterCoolerState).value as number;
+        const targetState = service.getCharacteristic(this.Characteristic.TargetHeaterCoolerState).value as number;
         shouldBeActive = currentState > 0 || targetState > 0;
       }
       
