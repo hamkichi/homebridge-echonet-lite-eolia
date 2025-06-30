@@ -56,3 +56,13 @@ export interface EchonetSetPropertyValue {
   mode?: number;
   temperature?: number;
 }
+
+export interface CacheEntry<T> {
+  value: T;
+  timestamp: number;
+  ttl: number;
+}
+
+export interface PropertyCache {
+  [epc: number]: CacheEntry<unknown>;
+}

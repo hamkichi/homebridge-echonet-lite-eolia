@@ -3,7 +3,7 @@ import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
 import { EoliaPlatform } from './platform.js';
 import { promisify } from 'util';
 import { JobQueue } from './jobQueue.js';
-import { EchonetPropertyResponse, EchonetNotification, EchonetSetPropertyValue } from './types.js';
+import { EchonetPropertyResponse, EchonetNotification, EchonetSetPropertyValue, PropertyCache, CacheEntry } from './types.js';
 
 /**
  * Platform Accessory
@@ -17,6 +17,15 @@ export class EoliaPlatformAccessory {
   private readonly eoj: number[];
   private isActive = false; // power on: true, off: false
   private readonly jobQueue: JobQueue = new JobQueue();
+  private readonly propertyCache: PropertyCache = {};
+
+  // Cache TTL settings (in milliseconds)
+  private readonly cacheTTL = {
+    temperature: 5000,     // 5 seconds for temperature readings
+    thresholdTemp: 10000,  // 10 seconds for threshold temperatures
+    status: 2000,          // 2 seconds for status
+    mode: 3000,           // 3 seconds for mode
+  };
 
   constructor(
     private readonly platform: EoliaPlatform,
@@ -84,7 +93,7 @@ export class EoliaPlatformAccessory {
     let currentValue = false;
 
     try {
-      const res = await this.getPropertyValue(this.address, this.eoj, 0x80);
+      const res = await this.getPropertyValueWithCache(this.address, this.eoj, 0x80, this.cacheTTL.status);
       const status = res.message.data.status;
       currentValue = status ?? false;
       this.isActive = currentValue;
@@ -128,7 +137,7 @@ export class EoliaPlatformAccessory {
 
     if (this.isActive) {
       try {
-        const res = await this.getPropertyValue(this.address, this.eoj, 0xB0);
+        const res = await this.getPropertyValueWithCache(this.address, this.eoj, 0xB0, this.cacheTTL.mode);
         const mode = res.message.data.mode;
         currentValue = mode === 2
           ? this.platform.Characteristic.CurrentHeaterCoolerState.COOLING
@@ -155,7 +164,7 @@ export class EoliaPlatformAccessory {
 
     if (this.isActive) {
       try {
-        const res = await this.getPropertyValue(this.address, this.eoj, 0xB0);
+        const res = await this.getPropertyValueWithCache(this.address, this.eoj, 0xB0, this.cacheTTL.mode);
         const mode = res.message.data.mode;
         if (mode === 2) {
           currentValue = this.platform.Characteristic.TargetHeaterCoolerState.COOL;
@@ -210,7 +219,7 @@ export class EoliaPlatformAccessory {
     let currentValue = -127;
 
     try {
-      const res = await this.getPropertyValue(this.address, this.eoj, 0xBB);
+      const res = await this.getPropertyValueWithCache(this.address, this.eoj, 0xBB, this.cacheTTL.temperature);
       const temperature = res.message.data.temperature;
       currentValue = temperature ?? -127;
     } catch (err) {
@@ -225,26 +234,29 @@ export class EoliaPlatformAccessory {
   }
 
   /**
+   * Get threshold temperature (shared by both cooling and heating)
+   */
+  private async getThresholdTemperature(): Promise<number> {
+    try {
+      const res = await this.getPropertyValueWithCache(this.address, this.eoj, 0xB3, this.cacheTTL.thresholdTemp);
+      const temperature = res.message.data.temperature;
+      return temperature ?? 16;
+    } catch (err) {
+      if (err instanceof Error) {
+        this.platform.log.error('Failed to get threshold temperature:', err.message);
+      } else {
+        this.platform.log.error('Failed to get threshold temperature:', String(err));
+      }
+      return 16;
+    }
+  }
+
+  /**
    * Handle requests to get the current value of the "Cooling Threshold Temperature" characteristic
    */
   async handleCoolingThresholdTemperatureGet(): Promise<number> {
     this.platform.log.debug('Triggered GET CoolingThresholdTemperature');
-
-    let currentValue = 16;
-    try {
-      const res = await this.getPropertyValue(this.address, this.eoj, 0xB3);
-      const temperature = res.message.data.temperature;
-      currentValue = temperature ?? 16;
-    } catch (err) {
-      if (err instanceof Error) {
-        this.platform.log.error('Failed to get cooling threshold temperature:', err.message);
-      } else {
-        this.platform.log.error('Failed to get cooling threshold temperature:', String(err));
-      }
-      currentValue = 16;
-    }
-
-    return currentValue;
+    return await this.getThresholdTemperature();
   }
 
   /**
@@ -269,23 +281,7 @@ export class EoliaPlatformAccessory {
    */
   async handleHeatingThresholdTemperatureGet(): Promise<number> {
     this.platform.log.debug('Triggered GET HeatingThresholdTemperature');
-
-    let currentValue = 16;
-
-    try {
-      const res = await this.getPropertyValue(this.address, this.eoj, 0xB3);
-      const temperature = res.message.data.temperature;
-      currentValue = temperature ?? 16;
-    } catch (err) {
-      if (err instanceof Error) {
-        this.platform.log.error('Failed to get heating threshold temperature:', err.message);
-      } else {
-        this.platform.log.error('Failed to get heating threshold temperature:', String(err));
-      }
-      currentValue = 16;
-    }
-
-    return currentValue;
+    return await this.getThresholdTemperature();
   }
 
   /**
@@ -368,22 +364,108 @@ export class EoliaPlatformAccessory {
   }
 
   /**
-   * Promisified Echonet.getPropertyValue
+   * Check if cache entry is valid
+   */
+  private isCacheValid(entry: CacheEntry<unknown>): boolean {
+    return Date.now() - entry.timestamp < entry.ttl;
+  }
+
+  /**
+   * Get cached value if valid
+   */
+  private getCachedValue<T>(epc: number): T | null {
+    const entry = this.propertyCache[epc];
+    if (entry && this.isCacheValid(entry)) {
+      return entry.value as T;
+    }
+    return null;
+  }
+
+  /**
+   * Set cache value
+   */
+  private setCacheValue<T>(epc: number, value: T, ttl: number): void {
+    this.propertyCache[epc] = {
+      value,
+      timestamp: Date.now(),
+      ttl,
+    };
+  }
+
+  /**
+   * Get property value with caching
+   */
+  private async getPropertyValueWithCache(address: string, eoj: number[], edt: number, ttl: number): Promise<EchonetPropertyResponse> {
+    // Check cache first
+    const cachedValue = this.getCachedValue<EchonetPropertyResponse>(edt);
+    if (cachedValue) {
+      this.platform.log.debug(`Using cached value for EPC 0x${edt.toString(16)}`);
+      return cachedValue;
+    }
+
+    // Fetch from device
+    try {
+      const propertyValue = await this.jobQueue.addJob(async () => {
+        return await promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
+      }, 3000); // Shorter timeout for better responsiveness
+
+      const response = propertyValue as EchonetPropertyResponse;
+
+      // Cache the result
+      this.setCacheValue(edt, response, ttl);
+
+      return response;
+    } catch (err) {
+      this.platform.log.warn(`Failed to get property 0x${edt.toString(16)}, using cached or default value`);
+      // Return cached value even if expired, or throw if no cache
+      const expiredCache = this.propertyCache[edt];
+      if (expiredCache) {
+        this.platform.log.debug(`Using expired cache for EPC 0x${edt.toString(16)}`);
+        return expiredCache.value as EchonetPropertyResponse;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Promisified Echonet.getPropertyValue (legacy method)
    */
   private async getPropertyValue(address: string, eoj: number[], edt: number): Promise<EchonetPropertyResponse> {
-    const propertyValue = await this.jobQueue.addJob(async () => {
-      return await promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
-    });
-    return propertyValue as EchonetPropertyResponse;
+    return this.getPropertyValueWithCache(address, eoj, edt, this.cacheTTL.temperature);
+  }
+
+  /**
+   * Clear cache for specific property
+   */
+  private clearCache(epc: number): void {
+    delete this.propertyCache[epc];
   }
 
   /**
    * Promisified Echonet.setPropertyValue
    */
   private async setPropertyValue(address: string, eoj: number[], edt: number, value: EchonetSetPropertyValue): Promise<void> {
-    await this.jobQueue.addJob(async () => {
-      await promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
-    });
+    try {
+      await this.jobQueue.addJob(async () => {
+        await promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
+      }, 2000); // Shorter timeout for set operations
+
+      // Clear cache after successful set operation
+      this.clearCache(edt);
+
+      // Clear related caches
+      if (edt === 0x80) {
+        // Status change might affect other properties
+        this.clearCache(0xB0); // mode
+      } else if (edt === 0xB0) {
+        // Mode change might affect status display
+        this.clearCache(0x80); // status
+      }
+    } catch (err) {
+      // Still clear cache even on error to force fresh read next time
+      this.clearCache(edt);
+      throw err;
+    }
   }
 
 }

@@ -16,11 +16,11 @@ interface Queue {
 export class JobQueue {
   private readonly theQueue: Queue;
   private readonly jobResolveRejectMap = new Map<QueueJob, JobResolveReject>();
-  private readonly defaultTimeout = 10000;
-  private readonly maxRetries = 3;
+  private readonly defaultTimeout = 5000; // Reduced from 10s to 5s for better responsiveness
+  private readonly maxRetries = 2; // Reduced retries for faster failure detection
 
   constructor() {
-    this.theQueue = queue({ concurrency: 1, autostart: true, timeout: this.defaultTimeout });
+    this.theQueue = queue({ concurrency: 1, autostart: true, timeout: 3000 }); // Conservative timeout for queue
 
     this.theQueue.on('success', this.onJobComplete.bind(this));
     this.theQueue.on('error', this.onJobFailed.bind(this));
