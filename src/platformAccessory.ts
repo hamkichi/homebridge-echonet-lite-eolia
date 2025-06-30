@@ -274,6 +274,7 @@ export class EoliaPlatformAccessory {
       switch (p.epc) {
         case 0x80: //status
           this.platform.log.debug('Received status update - active:' + p.edt.status);
+          this.isActive = p.edt.status;
           this.service.updateCharacteristic(this.platform.Characteristic.Active, p.edt.status);
           break;
         case 0xB0: //mode
@@ -294,6 +295,8 @@ export class EoliaPlatformAccessory {
             default: //Auto
               this.service.updateCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState,
                 this.platform.Characteristic.TargetHeaterCoolerState.AUTO);
+              this.service.updateCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState,
+                this.platform.Characteristic.CurrentHeaterCoolerState.IDLE);
               break;
           }
           break;
