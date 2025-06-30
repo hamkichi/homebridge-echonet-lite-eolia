@@ -3,6 +3,7 @@ import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
 import { EoliaPlatform } from './platform.js';
 import { promisify } from 'util';
 import { JobQueue } from './jobQueue.js';
+import { EchonetPropertyResponse, EchonetNotification, EchonetSetPropertyValue } from './types.js';
 
 /**
  * Platform Accessory
@@ -10,12 +11,12 @@ import { JobQueue } from './jobQueue.js';
  * Each accessory may expose multiple services of different service types.
  */
 export class EoliaPlatformAccessory {
-  private service: Service;
+  private readonly service: Service;
 
-  private address;
-  private eoj;
-  private isActive = false; //power on: true, off: false
-  private jobQueue: JobQueue = new JobQueue();
+  private readonly address: string;
+  private readonly eoj: number[];
+  private isActive = false; // power on: true, off: false
+  private readonly jobQueue: JobQueue = new JobQueue();
 
   constructor(
     private readonly platform: EoliaPlatform,
@@ -77,21 +78,23 @@ export class EoliaPlatformAccessory {
   /**
    * Handle requests to get the current value of the "Active" characteristic
    */
-  async handleActiveGet() {
+  async handleActiveGet(): Promise<boolean> {
     this.platform.log.debug('Triggered GET Active');
 
     let currentValue = false;
 
     try {
       const res = await this.getPropertyValue(this.address, this.eoj, 0x80);
-      currentValue = res.message.data.status;
-      if (currentValue === null){
-        currentValue = false;
-      }
+      const status = res.message.data.status;
+      currentValue = status ?? false;
       this.isActive = currentValue;
     } catch (err) {
       currentValue = this.isActive;
-      this.platform.log.error((err as Error).message);
+      if (err instanceof Error) {
+        this.platform.log.error('Failed to get Active status:', err.message);
+      } else {
+        this.platform.log.error('Failed to get Active status:', String(err));
+      }
     }
     return currentValue;
   }
@@ -99,33 +102,43 @@ export class EoliaPlatformAccessory {
   /**
    * Handle requests to set the "Active" characteristic
    */
-  handleActiveSet(value: CharacteristicValue) {
-    this.platform.log.debug('Triggered SET Active:' + value);
+  handleActiveSet(value: CharacteristicValue): void {
+    this.platform.log.debug('Triggered SET Active:', value);
 
     try {
-      this.setPropertyValue(this.address, this.eoj, 0x80, {status: value !== 0});
-      this.isActive = (value !== 0);
+      const isActive = value !== 0;
+      this.setPropertyValue(this.address, this.eoj, 0x80, { status: isActive });
+      this.isActive = isActive;
     } catch (err) {
-      this.platform.log.error((err as Error).message);
+      if (err instanceof Error) {
+        this.platform.log.error('Failed to set Active status:', err.message);
+      } else {
+        this.platform.log.error('Failed to set Active status:', String(err));
+      }
     }
   }
 
   /**
    * Handle requests to get the current value of the "Current Heater-Cooler State" characteristic
    */
-  async handleCurrentHeaterCoolerStateGet() {
+  async handleCurrentHeaterCoolerStateGet(): Promise<number> {
     this.platform.log.debug('Triggered GET CurrentHeaterCoolerState');
 
     let currentValue = this.platform.Characteristic.CurrentHeaterCoolerState.INACTIVE;
 
     if (this.isActive) {
-      const res = await this.getPropertyValue(this.address, this.eoj, 0xB0);
       try {
+        const res = await this.getPropertyValue(this.address, this.eoj, 0xB0);
         const mode = res.message.data.mode;
-        currentValue = mode===2 ? this.platform.Characteristic.CurrentHeaterCoolerState.COOLING
+        currentValue = mode === 2
+          ? this.platform.Characteristic.CurrentHeaterCoolerState.COOLING
           : this.platform.Characteristic.CurrentHeaterCoolerState.HEATING;
       } catch (err) {
-        this.platform.log.error((err as Error).message);
+        if (err instanceof Error) {
+          this.platform.log.error('Failed to get current heater-cooler state:', err.message);
+        } else {
+          this.platform.log.error('Failed to get current heater-cooler state:', String(err));
+        }
         currentValue = this.platform.Characteristic.CurrentHeaterCoolerState.INACTIVE;
       }
     }
@@ -135,14 +148,14 @@ export class EoliaPlatformAccessory {
   /**
    * Handle requests to get the current value of the "Target Heater-Cooler State" characteristic
    */
-  async handleTargetHeaterCoolerStateGet() {
+  async handleTargetHeaterCoolerStateGet(): Promise<number> {
     this.platform.log.debug('Triggered GET TargetHeaterCoolerState');
 
     let currentValue = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
 
     if (this.isActive) {
-      const res = await this.getPropertyValue(this.address, this.eoj, 0xB0);
       try {
+        const res = await this.getPropertyValue(this.address, this.eoj, 0xB0);
         const mode = res.message.data.mode;
         if (mode === 2) {
           currentValue = this.platform.Characteristic.TargetHeaterCoolerState.COOL;
@@ -152,7 +165,11 @@ export class EoliaPlatformAccessory {
           currentValue = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
         }
       } catch (err) {
-        this.platform.log.error((err as Error).message);
+        if (err instanceof Error) {
+          this.platform.log.error('Failed to get target heater-cooler state:', err.message);
+        } else {
+          this.platform.log.error('Failed to get target heater-cooler state:', String(err));
+        }
         currentValue = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
       }
     }
@@ -163,35 +180,45 @@ export class EoliaPlatformAccessory {
   /**
    * Handle requests to set the "Target Heater-Cooler State" characteristic
    */
-  async handleTargetHeaterCoolerStateSet(value) {
-    this.platform.log.debug('Triggered SET TargetHeaterCoolerState:' + value);
+  async handleTargetHeaterCoolerStateSet(value: CharacteristicValue): Promise<void> {
+    this.platform.log.debug('Triggered SET TargetHeaterCoolerState:', value);
 
     let mode = 1; // AUTO
     if (value === this.platform.Characteristic.TargetHeaterCoolerState.COOL) {
-      mode = 2; //COOLER
+      mode = 2; // COOLER
     } else if (value === this.platform.Characteristic.TargetHeaterCoolerState.HEAT) {
-      mode = 3; //HEATER
+      mode = 3; // HEATER
     }
 
-    this.setPropertyValue(this.address, this.eoj, 0xB0, {mode});
+    try {
+      await this.setPropertyValue(this.address, this.eoj, 0xB0, { mode });
+    } catch (err) {
+      if (err instanceof Error) {
+        this.platform.log.error('Failed to set target heater-cooler state:', err.message);
+      } else {
+        this.platform.log.error('Failed to set target heater-cooler state:', String(err));
+      }
+    }
   }
 
   /**
    * Handle requests to get the current value of the "Current Temperature" characteristic
    */
-  async handleCurrentTemperatureGet() {
+  async handleCurrentTemperatureGet(): Promise<number> {
     this.platform.log.debug('Triggered GET CurrentTemperature');
 
     let currentValue = -127;
 
     try {
       const res = await this.getPropertyValue(this.address, this.eoj, 0xBB);
-      currentValue = res.message.data.temperature;
-      if (currentValue === null){
-        currentValue = -127;
-      }
+      const temperature = res.message.data.temperature;
+      currentValue = temperature ?? -127;
     } catch (err) {
-      this.platform.log.error((err as Error).message);
+      if (err instanceof Error) {
+        this.platform.log.error('Failed to get current temperature:', err.message);
+      } else {
+        this.platform.log.error('Failed to get current temperature:', String(err));
+      }
       currentValue = -127;
     }
     return currentValue;
@@ -200,18 +227,20 @@ export class EoliaPlatformAccessory {
   /**
    * Handle requests to get the current value of the "Cooling Threshold Temperature" characteristic
    */
-  async handleCoolingThresholdTemperatureGet() {
+  async handleCoolingThresholdTemperatureGet(): Promise<number> {
     this.platform.log.debug('Triggered GET CoolingThresholdTemperature');
 
     let currentValue = 16;
     try {
       const res = await this.getPropertyValue(this.address, this.eoj, 0xB3);
-      currentValue = res.message.data.temperature;
-      if (currentValue === null){
-        currentValue = 16;
-      }
+      const temperature = res.message.data.temperature;
+      currentValue = temperature ?? 16;
     } catch (err) {
-      this.platform.log.error((err as Error).message);
+      if (err instanceof Error) {
+        this.platform.log.error('Failed to get cooling threshold temperature:', err.message);
+      } else {
+        this.platform.log.error('Failed to get cooling threshold temperature:', String(err));
+      }
       currentValue = 16;
     }
 
@@ -221,27 +250,38 @@ export class EoliaPlatformAccessory {
   /**
    * Handle requests to set the "Cooling Threshold Temperature" characteristic
    */
-  handleCoolingThresholdTemperatureSet(value) {
-    this.platform.log.debug('Triggered SET CoolingThresholdTemperature:' + value);
-    this.setPropertyValue(this.address, this.eoj, 0xB3, {temperature: parseInt(value)});
+  async handleCoolingThresholdTemperatureSet(value: CharacteristicValue): Promise<void> {
+    this.platform.log.debug('Triggered SET CoolingThresholdTemperature:', value);
+    try {
+      const temperature = parseInt(String(value));
+      await this.setPropertyValue(this.address, this.eoj, 0xB3, { temperature });
+    } catch (err) {
+      if (err instanceof Error) {
+        this.platform.log.error('Failed to set cooling threshold temperature:', err.message);
+      } else {
+        this.platform.log.error('Failed to set cooling threshold temperature:', String(err));
+      }
+    }
   }
 
   /**
    * Handle requests to get the current value of the "Heating Threshold Temperature" characteristic
    */
-  async handleHeatingThresholdTemperatureGet() {
+  async handleHeatingThresholdTemperatureGet(): Promise<number> {
     this.platform.log.debug('Triggered GET HeatingThresholdTemperature');
 
     let currentValue = 16;
 
     try {
       const res = await this.getPropertyValue(this.address, this.eoj, 0xB3);
-      currentValue = res.message.data.temperature;
-      if (currentValue === null){
-        currentValue = 16;
-      }
+      const temperature = res.message.data.temperature;
+      currentValue = temperature ?? 16;
     } catch (err) {
-      this.platform.log.error((err as Error).message);
+      if (err instanceof Error) {
+        this.platform.log.error('Failed to get heating threshold temperature:', err.message);
+      } else {
+        this.platform.log.error('Failed to get heating threshold temperature:', String(err));
+      }
       currentValue = 16;
     }
 
@@ -251,15 +291,24 @@ export class EoliaPlatformAccessory {
   /**
    * Handle requests to set the "Heating Threshold Temperature" characteristic
    */
-  async handleHeatingThresholdTemperatureSet(value) {
-    this.platform.log.debug('Triggered SET HeatingThresholdTemperature:' + value);
-    this.setPropertyValue(this.address, this.eoj, 0xB3, {temperature: parseInt(value)});
+  async handleHeatingThresholdTemperatureSet(value: CharacteristicValue): Promise<void> {
+    this.platform.log.debug('Triggered SET HeatingThresholdTemperature:', value);
+    try {
+      const temperature = parseInt(String(value));
+      await this.setPropertyValue(this.address, this.eoj, 0xB3, { temperature });
+    } catch (err) {
+      if (err instanceof Error) {
+        this.platform.log.error('Failed to set heating threshold temperature:', err.message);
+      } else {
+        this.platform.log.error('Failed to set heating threshold temperature:', String(err));
+      }
+    }
   }
 
   /**
    * Handle status change event
    */
-  async updateStates(res) {
+  async updateStates(res: EchonetNotification): Promise<void> {
 
     const { prop } = res.message;
     if (res.device.address !== this.address) {
@@ -272,10 +321,12 @@ export class EoliaPlatformAccessory {
       }
 
       switch (p.epc) {
-        case 0x80: //status
-          this.platform.log.debug('Received status update - active:' + p.edt.status);
-          this.isActive = p.edt.status;
-          this.service.updateCharacteristic(this.platform.Characteristic.Active, p.edt.status);
+        case 0x80: // status
+          if (p.edt.status !== undefined) {
+            this.platform.log.debug('Received status update - active:', p.edt.status);
+            this.isActive = p.edt.status;
+            this.service.updateCharacteristic(this.platform.Characteristic.Active, p.edt.status);
+          }
           break;
         case 0xB0: //mode
           this.platform.log.debug('Received status update - mode:' + p.edt.mode);
@@ -300,14 +351,18 @@ export class EoliaPlatformAccessory {
               break;
           }
           break;
-        case 0xB3: //target temperature
-          this.platform.log.debug('Received status update - target temperature:' + p.edt.temperature);
-          this.service.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, p.edt.temperature);
-          this.service.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, p.edt.temperature);
+        case 0xB3: // target temperature
+          if (p.edt.temperature !== undefined) {
+            this.platform.log.debug('Received status update - target temperature:', p.edt.temperature);
+            this.service.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, p.edt.temperature);
+            this.service.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, p.edt.temperature);
+          }
           break;
-        case 0xBB: //current temperature
-          this.platform.log.debug('Received status update - current temperature:' + p.edt.temperature);
-          this.service.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, p.edt.temperature);
+        case 0xBB: // current temperature
+          if (p.edt.temperature !== undefined) {
+            this.platform.log.debug('Received status update - current temperature:', p.edt.temperature);
+            this.service.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, p.edt.temperature);
+          }
       }
     }
   }
@@ -315,17 +370,17 @@ export class EoliaPlatformAccessory {
   /**
    * Promisified Echonet.getPropertyValue
    */
-  async getPropertyValue(address: string, eoj: number[], edt: number) {
+  private async getPropertyValue(address: string, eoj: number[], edt: number): Promise<EchonetPropertyResponse> {
     const propertyValue = await this.jobQueue.addJob(async () => {
       return await promisify(this.platform.el.getPropertyValue).bind(this.platform.el)(address, eoj, edt);
     });
-    return propertyValue;
+    return propertyValue as EchonetPropertyResponse;
   }
 
   /**
    * Promisified Echonet.setPropertyValue
    */
-  async setPropertyValue(address: string, eoj: number[], edt: number, value: any){
+  private async setPropertyValue(address: string, eoj: number[], edt: number, value: EchonetSetPropertyValue): Promise<void> {
     await this.jobQueue.addJob(async () => {
       await promisify(this.platform.el.setPropertyValue).bind(this.platform.el)(address, eoj, edt, value);
     });

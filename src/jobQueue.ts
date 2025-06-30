@@ -1,15 +1,21 @@
 import { createRequire } from 'module';
+import { JobResolveReject } from './types.js';
+
 const require = createRequire(import.meta.url);
 const queue = require('queue');
 
-interface JobResolveReject {
-  resolve: (value: any) => void;
-  reject: (reason?: any) => void;
+type QueueJob = () => Promise<unknown>;
+
+interface Queue {
+  push(job: QueueJob): void;
+  on(event: 'success', callback: (result: unknown, job: QueueJob) => void): void;
+  on(event: 'error', callback: (error: unknown, job: QueueJob) => void): void;
+  on(event: 'timeout', callback: (next: () => void, job: QueueJob) => void): void;
 }
 
 export class JobQueue {
-  private theQueue: any;
-  private jobResolveRejectMap = new Map<any, JobResolveReject>();
+  private readonly theQueue: Queue;
+  private readonly jobResolveRejectMap = new Map<QueueJob, JobResolveReject>();
   private readonly defaultTimeout = 10000;
   private readonly maxRetries = 3;
 
@@ -21,11 +27,11 @@ export class JobQueue {
     this.theQueue.on('timeout', this.onJobTimeout.bind(this));
   }
 
-  async addJob(job: () => Promise<any>, timeout = this.defaultTimeout, retries = this.maxRetries): Promise<any> {
+  async addJob(job: QueueJob, timeout = this.defaultTimeout, retries = this.maxRetries): Promise<unknown> {
     return this.executeWithRetry(job, timeout, retries);
   }
 
-  private async executeWithRetry(job: () => Promise<any>, timeout: number, retries: number): Promise<any> {
+  private async executeWithRetry(job: QueueJob, timeout: number, retries: number): Promise<unknown> {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         return await this.executeJob(job, timeout);
@@ -36,9 +42,12 @@ export class JobQueue {
         await this.delay(Math.pow(2, attempt) * 1000);
       }
     }
+
+    // This should never be reached due to the throw above, but TypeScript needs it
+    throw new Error('Maximum retries exceeded');
   }
 
-  private async executeJob(job: () => Promise<any>, timeout: number): Promise<any> {
+  private async executeJob(job: QueueJob, timeout: number): Promise<unknown> {
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Job timeout after ' + timeout + 'ms')), timeout);
     });
@@ -55,7 +64,7 @@ export class JobQueue {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  onJobComplete(result: any, job: () => Promise<any>) {
+  private onJobComplete(result: unknown, job: QueueJob): void {
     const resolveReject = this.jobResolveRejectMap.get(job);
     if (resolveReject) {
       const { resolve } = resolveReject;
@@ -64,7 +73,7 @@ export class JobQueue {
     }
   }
 
-  onJobFailed(error: any, job: () => Promise<any>) {
+  private onJobFailed(error: unknown, job: QueueJob): void {
     const resolveReject = this.jobResolveRejectMap.get(job);
     if (resolveReject) {
       const { reject } = resolveReject;
@@ -73,7 +82,7 @@ export class JobQueue {
     }
   }
 
-  onJobTimeout(next: () => void, job: () => Promise<any>) {
+  private onJobTimeout(next: () => void, job: QueueJob): void {
     const resolveReject = this.jobResolveRejectMap.get(job);
     if (resolveReject) {
       const { reject } = resolveReject;
