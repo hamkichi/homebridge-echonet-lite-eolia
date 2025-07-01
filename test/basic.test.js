@@ -62,7 +62,7 @@ describe('Basic Tests', () => {
     const path = require('path');
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const pkg = require('../package.json');
-    
+
     const settingsPath = path.join(__dirname, '../dist/settings.js');
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settingsContent = fs.readFileSync(settingsPath, 'utf8');
