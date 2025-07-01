@@ -20,7 +20,7 @@ English: [README_en.md](https://github.com/hamkichi/homebridge-echonet-lite-airc
 
 ```
 {
-    "name": "EoliaPlatform",
-    "platform": "EoliaPlatform"
+    "name": "EchonetLiteAircon",
+    "platform": "EchonetLiteAircon"
 }
 ```

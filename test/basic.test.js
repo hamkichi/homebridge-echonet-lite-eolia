@@ -52,7 +52,7 @@ describe('Basic Tests', () => {
     expect(fs.existsSync(indexPath)).toBe(true);
     const indexContent = fs.readFileSync(indexPath, 'utf8');
     expect(indexContent).toContain('PLATFORM_NAME');
-    expect(indexContent).toContain('EoliaPlatform');
+    expect(indexContent).toContain('EchonetLiteAircon');
   });
 
   test('should have valid settings file', () => {
@@ -63,7 +63,7 @@ describe('Basic Tests', () => {
     const settingsPath = path.join(__dirname, '../dist/settings.js');
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settingsContent = fs.readFileSync(settingsPath, 'utf8');
-    expect(settingsContent).toContain('EoliaPlatform');
+    expect(settingsContent).toContain('EchonetLiteAircon');
     expect(settingsContent).toContain('homebridge-echonet-lite-aircon');
     expect(settingsContent).toContain('VERSION = \'1.0.0\'');
   });

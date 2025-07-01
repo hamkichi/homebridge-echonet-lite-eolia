@@ -1,6 +1,6 @@
 import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
 
-import { EoliaPlatform } from './platform.js';
+import { EchonetLiteAirconPlatform } from './platform.js';
 import { promisify } from 'util';
 import { JobQueue } from './jobQueue.js';
 import { EchonetPropertyResponse, EchonetNotification, EchonetSetPropertyValue, PropertyCache, CacheEntry } from './types.js';
@@ -11,7 +11,7 @@ import { getManufacturerName } from './manufacturerCodes.js';
  * An instance of this class is created for each accessory your platform registers
  * Each accessory may expose multiple services of different service types.
  */
-export class EoliaPlatformAccessory {
+export class EchonetLiteAirconAccessory {
   private readonly service: Service;
 
   private readonly address: string;
@@ -29,7 +29,7 @@ export class EoliaPlatformAccessory {
   };
 
   constructor(
-    private readonly platform: EoliaPlatform,
+    private readonly platform: EchonetLiteAirconPlatform,
     private readonly accessory: PlatformAccessory,
   ) {
 

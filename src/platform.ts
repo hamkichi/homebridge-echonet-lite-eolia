@@ -1,7 +1,7 @@
 import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
 
 import { PLATFORM_NAME, PLUGIN_NAME, VERSION } from './settings.js';
-import { EoliaPlatformAccessory } from './platformAccessory.js';
+import { EchonetLiteAirconAccessory } from './platformAccessory.js';
 import { EchonetDevice, EchonetDiscoveryResult, EchonetPropertyResponse } from './types.js';
 import { getManufacturerInfo, getManufacturerName } from './manufacturerCodes.js';
 
@@ -14,7 +14,7 @@ import { promisify } from 'util';
  * This class is the main constructor for your plugin, this is where you should
  * parse the user config and discover/register accessories with Homebridge.
  */
-export class EoliaPlatform implements DynamicPlatformPlugin {
+export class EchonetLiteAirconPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
 
@@ -139,7 +139,7 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
 
       // create the accessory handler for the restored accessory
       // this is imported from `platformAccessory.ts`
-      new EoliaPlatformAccessory(this, existingAccessory);
+      new EchonetLiteAirconAccessory(this, existingAccessory);
     } else {
       // the accessory does not yet exist, so we need to create it
       const manufacturerName = manufacturerCode ? getManufacturerName(manufacturerCode) : 'Unknown';
@@ -168,7 +168,7 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
 
       // create the accessory handler for the newly create accessory
       // this is imported from `platformAccessory.ts`
-      new EoliaPlatformAccessory(this, accessory);
+      new EchonetLiteAirconAccessory(this, accessory);
 
       // link the accessory to your platform
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
