@@ -38,35 +38,53 @@ export const AIRCON_MANUFACTURERS: Record<string, ManufacturerInfo> = {
 
 /**
  * Get manufacturer information from ECHONET Lite manufacturer code
- * @param manufacturerCode - 6-character hex string manufacturer code (e.g., "00000b")
+ * @param manufacturerCode - manufacturer code in various formats (hex string, number array, etc.)
  * @returns ManufacturerInfo or null if code not found
  */
-export function getManufacturerInfo(manufacturerCode: string): ManufacturerInfo | null {
-  if (!manufacturerCode || typeof manufacturerCode !== 'string') {
+export function getManufacturerInfo(manufacturerCode: string | number[] | number | undefined): ManufacturerInfo | null {
+  if (!manufacturerCode && manufacturerCode !== 0) {
     return null;
   }
 
-  // Normalize the code to lowercase and ensure 6 characters
-  const normalizedCode = manufacturerCode.toLowerCase().padStart(6, '0');
+  let normalizedCode: string;
+
+  if (Array.isArray(manufacturerCode)) {
+    // Handle number array format (e.g., [0, 0, 11] for Panasonic)
+    normalizedCode = manufacturerCode
+      .map(byte => byte.toString(16).padStart(2, '0'))
+      .join('')
+      .toLowerCase();
+  } else if (typeof manufacturerCode === 'number') {
+    // Handle single number format (e.g., 11 for Panasonic)
+    normalizedCode = manufacturerCode.toString(16).padStart(6, '0').toLowerCase();
+  } else if (typeof manufacturerCode === 'string') {
+    // Handle string format
+    normalizedCode = manufacturerCode
+      .replace(/[^0-9a-fA-F]/g, '') // Remove non-hex characters
+      .toLowerCase()
+      .padStart(6, '0');
+  } else {
+    return null;
+  }
 
   return AIRCON_MANUFACTURERS[normalizedCode] || null;
 }
 
 /**
  * Get short manufacturer name from code
- * @param manufacturerCode - 6-character hex string manufacturer code
+ * @param manufacturerCode - manufacturer code in various formats
  * @returns Short manufacturer name or "Unknown" if not found
  */
-export function getManufacturerName(manufacturerCode: string): string {
+export function getManufacturerName(manufacturerCode: string | number[] | number | undefined): string {
   const info = getManufacturerInfo(manufacturerCode);
   return info?.shortName || 'Unknown';
 }
 
 /**
  * Check if manufacturer code is recognized
- * @param manufacturerCode - 6-character hex string manufacturer code
+ * @param manufacturerCode - manufacturer code in various formats
  * @returns true if manufacturer is known
  */
-export function isKnownManufacturer(manufacturerCode: string): boolean {
+export function isKnownManufacturer(manufacturerCode: string | number[] | number | undefined): boolean {
   return getManufacturerInfo(manufacturerCode) !== null;
 }
