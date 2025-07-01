@@ -35,8 +35,8 @@ describe('Basic Tests', () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const pkg = require('../package.json');
 
-    expect(pkg.name).toBe('homebridge-echonet-lite-eolia');
-    expect(pkg.version).toMatch(/^0\.9\.1/);
+    expect(pkg.name).toBe('homebridge-echonet-lite-aircon');
+    expect(pkg.version).toBe('1.0.0');
     expect(pkg.main).toBe('dist/index.js');
     expect(pkg.engines).toBeDefined();
     expect(pkg.engines.node).toBeDefined();
@@ -52,7 +52,7 @@ describe('Basic Tests', () => {
     expect(fs.existsSync(indexPath)).toBe(true);
     const indexContent = fs.readFileSync(indexPath, 'utf8');
     expect(indexContent).toContain('PLATFORM_NAME');
-    expect(indexContent).toContain('EoliaPlatform');
+    expect(indexContent).toContain('EchonetLiteAircon');
   });
 
   test('should have valid settings file', () => {
@@ -63,8 +63,8 @@ describe('Basic Tests', () => {
     const settingsPath = path.join(__dirname, '../dist/settings.js');
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settingsContent = fs.readFileSync(settingsPath, 'utf8');
-    expect(settingsContent).toContain('EoliaPlatform');
-    expect(settingsContent).toContain('homebridge-echonet-lite-eolia');
-    expect(settingsContent).toMatch(/VERSION = '0\.9\.1/);
+    expect(settingsContent).toContain('EchonetLiteAircon');
+    expect(settingsContent).toContain('homebridge-echonet-lite-aircon');
+    expect(settingsContent).toContain('VERSION = \'1.0.0\'');
   });
 });

@@ -1,8 +1,9 @@
 import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
 
 import { PLATFORM_NAME, PLUGIN_NAME, VERSION } from './settings.js';
-import { EoliaPlatformAccessory } from './platformAccessory.js';
+import { EchonetLiteAirconAccessory } from './platformAccessory.js';
 import { EchonetDevice, EchonetDiscoveryResult, EchonetPropertyResponse } from './types.js';
+import { getManufacturerInfo, getManufacturerName } from './manufacturerCodes.js';
 
 import EchonetLite from 'node-echonet-lite';
 import { promisify } from 'util';
@@ -13,7 +14,7 @@ import { promisify } from 'util';
  * This class is the main constructor for your plugin, this is where you should
  * parse the user config and discover/register accessories with Homebridge.
  */
-export class EoliaPlatform implements DynamicPlatformPlugin {
+export class EchonetLiteAirconPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
 
@@ -86,7 +87,23 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
               } else {
                 uuid = this.api.hap.uuid.generate(address);
               }
-              this.addAccessory(device, address, eoj, uuid);
+
+              // Get manufacturer information
+              let manufacturerCode: string | undefined;
+              try {
+                const manufacturerRes = await promisify(this.el.getPropertyValue)
+                  .bind(this.el)(address, eoj, 0x8A) as EchonetPropertyResponse;
+                if (manufacturerRes.message.data && manufacturerRes.message.data.code) {
+                  manufacturerCode = manufacturerRes.message.data.code;
+                  const manufacturerName = getManufacturerName(manufacturerCode);
+                  this.log.info(`Discovered air conditioner: ${manufacturerName} (code: ${manufacturerCode}) at ${address}`);
+                }
+              } catch (err) {
+                this.log.debug('Could not retrieve manufacturer code:',
+                  err instanceof Error ? err.message : String(err));
+              }
+
+              this.addAccessory(device, address, eoj, uuid, manufacturerCode);
             }
           } catch (err) {
             if (err instanceof Error) {
@@ -104,21 +121,34 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
     }, 60 * 1000);
   }
 
-  private addAccessory(device: EchonetDevice, address: string, eoj: number[], uuid: string): void {
+  private addAccessory(device: EchonetDevice, address: string, eoj: number[], uuid: string, manufacturerCode?: string): void {
     const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
 
     if (existingAccessory) {
       // the accessory already exists
       this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
+
+      // Update manufacturer information if available
+      if (manufacturerCode) {
+        existingAccessory.context.manufacturerCode = manufacturerCode;
+        const manufacturerInfo = getManufacturerInfo(manufacturerCode);
+        if (manufacturerInfo) {
+          existingAccessory.context.manufacturer = manufacturerInfo;
+        }
+      }
+
       // create the accessory handler for the restored accessory
       // this is imported from `platformAccessory.ts`
-      new EoliaPlatformAccessory(this, existingAccessory);
+      new EchonetLiteAirconAccessory(this, existingAccessory);
     } else {
       // the accessory does not yet exist, so we need to create it
-      this.log.info('Adding new accessory:', address);
+      const manufacturerName = manufacturerCode ? getManufacturerName(manufacturerCode) : 'Unknown';
+      const displayName = `${manufacturerName} Air Conditioner`;
+
+      this.log.info('Adding new accessory:', displayName);
 
       // create a new accessory
-      const accessory = new this.api.platformAccessory(address, uuid);
+      const accessory = new this.api.platformAccessory(displayName, uuid);
 
       // store a copy of the device object in the `accessory.context`
       // the `context` property can be used to store any data about the accessory you may need
@@ -127,9 +157,18 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
       accessory.context.eoj = eoj;
       accessory.context.uuid = uuid;
 
+      // Store manufacturer information
+      if (manufacturerCode) {
+        accessory.context.manufacturerCode = manufacturerCode;
+        const manufacturerInfo = getManufacturerInfo(manufacturerCode);
+        if (manufacturerInfo) {
+          accessory.context.manufacturer = manufacturerInfo;
+        }
+      }
+
       // create the accessory handler for the newly create accessory
       // this is imported from `platformAccessory.ts`
-      new EoliaPlatformAccessory(this, accessory);
+      new EchonetLiteAirconAccessory(this, accessory);
 
       // link the accessory to your platform
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);

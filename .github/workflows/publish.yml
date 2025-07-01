@@ -352,13 +352,13 @@ jobs:
         echo "" >> pr_body.md
         echo "This automated PR contains the version bump and changes for release $VERSION." >> pr_body.md
         echo "" >> pr_body.md
-        echo "**✅ Published to NPM:** https://www.npmjs.com/package/homebridge-echonet-lite-eolia" >> pr_body.md
+        echo "**✅ Published to NPM:** https://www.npmjs.com/package/homebridge-echonet-lite-aircon" >> pr_body.md
         echo "**🏷️ NPM Tag:** \`${{ inputs.npm_tag }}\`" >> pr_body.md
         echo "**📋 Version Type:** \`${{ inputs.version_type }}\`" >> pr_body.md
         echo "" >> pr_body.md
         echo "### Installation" >> pr_body.md
         echo "\`\`\`bash" >> pr_body.md
-        echo "npm install homebridge-echonet-lite-eolia@$VERSION" >> pr_body.md
+        echo "npm install homebridge-echonet-lite-aircon@$VERSION" >> pr_body.md
         echo "\`\`\`" >> pr_body.md
         echo "" >> pr_body.md
         echo "### Changes" >> pr_body.md
@@ -392,11 +392,11 @@ jobs:
         body: |
           ## 🚀 Release ${{ steps.publish.outputs.version }}
           
-          **NPM Package:** https://www.npmjs.com/package/homebridge-echonet-lite-eolia
+          **NPM Package:** https://www.npmjs.com/package/homebridge-echonet-lite-aircon
           
           ### Installation
           ```bash
-          npm install homebridge-echonet-lite-eolia@${{ steps.publish.outputs.version }}
+          npm install homebridge-echonet-lite-aircon@${{ steps.publish.outputs.version }}
           ```
           
           ### Usage with Homebridge
@@ -464,7 +464,7 @@ jobs:
           echo "🎉 **Successfully published!**"
           echo ""
           echo "**Published version:** ${{ needs.publish.outputs.published_version }}"
-          echo "**NPM package:** https://www.npmjs.com/package/homebridge-echonet-lite-eolia"
+          echo "**NPM package:** https://www.npmjs.com/package/homebridge-echonet-lite-aircon"
           echo "**Release PR:** ${{ needs.publish.outputs.pr_url }}"
           echo ""
           echo "**Next steps:**"
