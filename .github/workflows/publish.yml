@@ -91,6 +91,7 @@ jobs:
     outputs:
       current_version: ${{ steps.version.outputs.current }}
       new_version: ${{ steps.version.outputs.new }}
+      final_version: ${{ steps.npm-check.outputs.final_version }}
       can_publish: ${{ steps.npm-check.outputs.can_publish }}
     
     steps:
@@ -145,36 +146,67 @@ jobs:
         # Reset package.json for validation
         git checkout package.json
     
-    - name: NPM availability check
+    - name: NPM availability check and auto-increment
       id: npm-check
       run: |
         PACKAGE_NAME=$(node -p "require('./package.json').name")
-        NEW_VERSION="${{ steps.version.outputs.new }}"
+        PROPOSED_VERSION="${{ steps.version.outputs.new }}"
         
-        if npm view "$PACKAGE_NAME@$NEW_VERSION" version 2>/dev/null; then
-          echo "can_publish=false" >> $GITHUB_OUTPUT
-          echo "❌ Version $NEW_VERSION already exists on NPM"
-          exit 1
+        echo "🔍 Checking NPM availability for $PROPOSED_VERSION..."
+        
+        # Function to check if version exists
+        version_exists() {
+          npm view "$PACKAGE_NAME@$1" version 2>/dev/null
+        }
+        
+        # Auto-increment logic for different version types
+        if [ "${{ inputs.version_type }}" = "prerelease" ]; then
+          # For prerelease, auto-increment beta number
+          BASE_VERSION=$(echo "$PROPOSED_VERSION" | sed 's/-beta\.[0-9]*$//')
+          BETA_NUM=0
+          
+          # Find next available beta version
+          while version_exists "$BASE_VERSION-beta.$BETA_NUM"; do
+            echo "⚠️  Version $BASE_VERSION-beta.$BETA_NUM already exists, trying next..."
+            BETA_NUM=$((BETA_NUM + 1))
+          done
+          
+          FINAL_VERSION="$BASE_VERSION-beta.$BETA_NUM"
+          echo "✅ Auto-incremented to: $FINAL_VERSION"
+          
         else
-          echo "can_publish=true" >> $GITHUB_OUTPUT
-          echo "✅ Version $NEW_VERSION is available"
+          # For major/minor/patch, if exists, suggest prerelease
+          if version_exists "$PROPOSED_VERSION"; then
+            echo "⚠️  Version $PROPOSED_VERSION already exists"
+            echo "💡 Suggestion: Use 'prerelease' version type for auto-increment"
+            echo "can_publish=false" >> $GITHUB_OUTPUT
+            echo "suggested_version=$PROPOSED_VERSION-beta.0" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            FINAL_VERSION="$PROPOSED_VERSION"
+            echo "✅ Version $FINAL_VERSION is available"
+          fi
         fi
+        
+        echo "can_publish=true" >> $GITHUB_OUTPUT
+        echo "final_version=$FINAL_VERSION" >> $GITHUB_OUTPUT
+        echo "📦 Final version to publish: $FINAL_VERSION"
     
     - name: Dry run simulation
       if: inputs.dry_run
       run: |
         echo "🚀 DRY RUN - Simulating NPM publish..."
         
-        # Apply version changes
-        if [ "${{ inputs.version_type }}" = "prerelease" ]; then
-          npm version prerelease --preid=beta --no-git-tag-version
-        else
-          npm version ${{ inputs.version_type }} --no-git-tag-version
-        fi
+        # Apply final version changes
+        FINAL_VERSION="${{ steps.npm-check.outputs.final_version }}"
+        echo "📝 Applying final version $FINAL_VERSION..."
         
-        # Update settings.ts
+        # Update package.json to final version
+        npm version --no-git-tag-version "$FINAL_VERSION"
+        
+        # Update settings.ts with final version
         if [ -f "src/settings.ts" ]; then
-          sed -i "s/export const VERSION = '[^']*';/export const VERSION = '${{ steps.version.outputs.new }}';/" src/settings.ts
+          sed -i "s/export const VERSION = '[^']*';/export const VERSION = '$FINAL_VERSION';/" src/settings.ts
         fi
         
         # Rebuild and test
@@ -240,19 +272,15 @@ jobs:
     
     - name: Apply version changes
       run: |
-        NEW_VERSION="${{ needs.prepare-release.outputs.new_version }}"
-        echo "📝 Applying version $NEW_VERSION..."
+        FINAL_VERSION="${{ needs.prepare-release.outputs.final_version }}"
+        echo "📝 Applying final version $FINAL_VERSION..."
         
-        # Update package.json
-        if [ "${{ inputs.version_type }}" = "prerelease" ]; then
-          npm version prerelease --preid=beta --no-git-tag-version
-        else
-          npm version ${{ inputs.version_type }} --no-git-tag-version
-        fi
+        # Update package.json to final version
+        npm version --no-git-tag-version "$FINAL_VERSION"
         
         # Update settings.ts
         if [ -f "src/settings.ts" ]; then
-          sed -i "s/export const VERSION = '[^']*';/export const VERSION = '$NEW_VERSION';/" src/settings.ts
+          sed -i "s/export const VERSION = '[^']*';/export const VERSION = '$FINAL_VERSION';/" src/settings.ts
         fi
         
         # Final rebuild
@@ -411,7 +439,7 @@ jobs:
           echo "✅ **Dry run completed successfully!**"
           echo ""
           echo "**Ready to publish:**"
-          echo "- Version: ${{ needs.prepare-release.outputs.current_version }} → ${{ needs.prepare-release.outputs.new_version }}"
+          echo "- Version: ${{ needs.prepare-release.outputs.current_version }} → ${{ needs.prepare-release.outputs.final_version }}"
           echo "- NPM tag: ${{ inputs.npm_tag }}"
           echo ""
           echo "**To publish for real:**"
