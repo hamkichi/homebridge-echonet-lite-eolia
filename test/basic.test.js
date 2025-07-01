@@ -36,7 +36,7 @@ describe('Basic Tests', () => {
     const pkg = require('../package.json');
 
     expect(pkg.name).toBe('homebridge-echonet-lite-aircon');
-    expect(pkg.version).toMatch(/^0\.9\.1/);
+    expect(pkg.version).toBe('1.0.0');
     expect(pkg.main).toBe('dist/index.js');
     expect(pkg.engines).toBeDefined();
     expect(pkg.engines.node).toBeDefined();
@@ -65,6 +65,6 @@ describe('Basic Tests', () => {
     const settingsContent = fs.readFileSync(settingsPath, 'utf8');
     expect(settingsContent).toContain('EoliaPlatform');
     expect(settingsContent).toContain('homebridge-echonet-lite-aircon');
-    expect(settingsContent).toMatch(/VERSION = '0\.9\.1/);
+    expect(settingsContent).toContain('VERSION = \'1.0.0\'');
   });
 });
