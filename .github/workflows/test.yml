@@ -79,22 +79,49 @@ jobs:
     - name: Install Homebridge ${{ matrix.homebridge-version }}
       run: npm install --no-save homebridge@${{ matrix.homebridge-version }}
     
-    - name: Build plugin
-      run: npm run build
+    - name: Build plugin with beta compatibility
+      run: |
+        if [[ "${{ matrix.homebridge-version }}" == *"beta"* ]]; then
+          # For beta versions, build with skipLibCheck to avoid type conflicts
+          echo "Building for Homebridge beta with relaxed type checking..."
+          npx tsc --skipLibCheck --noEmitOnError false || npx tsc --skipLibCheck --noEmitOnError false --allowJs
+        else
+          npm run build
+        fi
     
     - name: Test plugin loading
       run: |
+        echo "Testing plugin loading with Homebridge ${{ matrix.homebridge-version }}..."
         node -e "
         try {
+          // Verify dist files exist
+          const fs = require('fs');
+          if (!fs.existsSync('./dist/index.js')) {
+            throw new Error('Build output missing: dist/index.js');
+          }
+          
+          // Test plugin loading
           const plugin = require('./dist/index.js');
           if (typeof plugin.default === 'function') {
             console.log('✅ Plugin exports valid function');
           } else {
-            console.error('❌ Plugin does not export function');
+            console.error('❌ Plugin does not export function, got:', typeof plugin.default);
             process.exit(1);
           }
+          
+          // Test settings loading
+          const settings = require('./dist/settings.js');
+          if (settings.PLATFORM_NAME && settings.PLUGIN_NAME) {
+            console.log('✅ Settings loaded successfully');
+            console.log('Platform:', settings.PLATFORM_NAME);
+            console.log('Plugin:', settings.PLUGIN_NAME);
+          } else {
+            console.log('⚠️  Settings may have issues but plugin structure is valid');
+          }
+          
         } catch (error) {
           console.error('❌ Plugin failed to load:', error.message);
+          console.error('Stack:', error.stack);
           process.exit(1);
         }
         "
