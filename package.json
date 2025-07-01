@@ -2,7 +2,7 @@
   "displayName": "Homebridge Echonet Lite Eolia",
   "name": "homebridge-echonet-lite-eolia",
   "type": "module",
-  "version": "1.0.0",
+  "version": "0.9.1",
   "private": true,
   "description": "Homebridge Plugin to control Panasonic air conditioner (Eolia) sold in Japan via Echonet-Lite protocol. Now in development.",
   "author": "Hamkichi",
