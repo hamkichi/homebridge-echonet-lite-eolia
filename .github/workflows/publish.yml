@@ -180,7 +180,7 @@ jobs:
         # Update version in settings.ts if it exists
         if [ -f "src/settings.ts" ]; then
           echo "→ Updating settings.ts VERSION..."
-          sed -i "s/export const VERSION = .*/export const VERSION = '${{ needs.validate.outputs.new }}';/" src/settings.ts
+          sed -i "s/export const VERSION = '[^']*';/export const VERSION = '${{ needs.validate.outputs.new }}';/" src/settings.ts
         fi
         
         # Rebuild with updated version
