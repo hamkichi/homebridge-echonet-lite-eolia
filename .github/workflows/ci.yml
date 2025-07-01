@@ -62,7 +62,7 @@ jobs:
     needs: quality-gate
     
     outputs:
-      dist-cache-key: ${{ steps.cache-dist.outputs.cache-primary-key }}
+      dist-cache-key: ${{ needs.quality-gate.outputs.build-cache-key }}
     
     steps:
     - name: Checkout code
@@ -119,12 +119,19 @@ jobs:
     - name: Install dependencies
       run: npm ci
     
-    - name: Restore build cache
+    - name: Restore build cache or download artifacts
       uses: actions/cache@v4
+      id: cache-restore
       with:
         path: dist/
         key: ${{ needs.build.outputs.dist-cache-key }}
-        fail-on-cache-miss: true
+    
+    - name: Download build artifacts (if cache miss)
+      if: steps.cache-restore.outputs.cache-hit != 'true'
+      uses: actions/download-artifact@v4
+      with:
+        name: dist-${{ github.sha }}
+        path: dist/
     
     - name: Run tests
       run: npm test
@@ -160,12 +167,19 @@ jobs:
     - name: Install dependencies
       run: npm ci
     
-    - name: Restore build cache
+    - name: Restore build cache or download artifacts
       uses: actions/cache@v4
+      id: cache-restore
       with:
         path: dist/
         key: ${{ needs.build.outputs.dist-cache-key }}
-        fail-on-cache-miss: true
+    
+    - name: Download build artifacts (if cache miss)
+      if: steps.cache-restore.outputs.cache-hit != 'true'
+      uses: actions/download-artifact@v4
+      with:
+        name: dist-${{ github.sha }}
+        path: dist/
     
     - name: Security scan
       if: matrix.check == 'security'
@@ -252,12 +266,19 @@ jobs:
     - name: Install dependencies
       run: npm ci
     
-    - name: Restore build cache
+    - name: Restore build cache or download artifacts
       uses: actions/cache@v4
+      id: cache-restore
       with:
         path: dist/
         key: ${{ needs.build.outputs.dist-cache-key }}
-        fail-on-cache-miss: true
+    
+    - name: Download build artifacts (if cache miss)
+      if: steps.cache-restore.outputs.cache-hit != 'true'
+      uses: actions/download-artifact@v4
+      with:
+        name: dist-${{ github.sha }}
+        path: dist/
     
     - name: Calculate next version
       id: version-calc
