@@ -9,6 +9,17 @@ export default tseslint.config(
       ecmaVersion: 2018,
       sourceType: 'module',
       parser: tseslint.parser,
+      globals: {
+        // Node.js globals
+        module: 'readonly',
+        require: 'readonly',
+        __dirname: 'readonly',
+        // Jest globals
+        describe: 'readonly',
+        test: 'readonly',
+        expect: 'readonly',
+        jest: 'readonly',
+      },
     },
     rules: {
       'quotes': ['warn', 'single'],
