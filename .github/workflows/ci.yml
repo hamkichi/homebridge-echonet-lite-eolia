@@ -152,7 +152,13 @@ jobs:
     
     strategy:
       matrix:
-        check: [security, homebridge-1.8.0, homebridge-2.0.0-beta.0]
+        include:
+          - check: security
+            homebridge_version: ""
+          - check: homebridge-1.8.0
+            homebridge_version: "1.8.0"
+          - check: homebridge-2.0.0-beta
+            homebridge_version: "2.0.0-beta.29"
     
     steps:
     - name: Checkout code
@@ -199,7 +205,7 @@ jobs:
       if: matrix.check != 'security'
       run: |
         # Install specific Homebridge version
-        npm install --no-save homebridge@${{ matrix.check }}
+        npm install --no-save homebridge@${{ matrix.homebridge_version }}
         
         # Test plugin loading with relaxed type checking for beta versions
         if [[ "${{ matrix.check }}" == *"beta"* ]]; then
