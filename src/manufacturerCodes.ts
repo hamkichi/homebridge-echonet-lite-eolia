@@ -41,8 +41,8 @@ export const AIRCON_MANUFACTURERS: Record<string, ManufacturerInfo> = {
  * @param manufacturerCode - manufacturer code in various formats (hex string, number array, etc.)
  * @returns ManufacturerInfo or null if code not found
  */
-export function getManufacturerInfo(manufacturerCode: string | number[] | undefined): ManufacturerInfo | null {
-  if (!manufacturerCode) {
+export function getManufacturerInfo(manufacturerCode: string | number[] | number | undefined): ManufacturerInfo | null {
+  if (!manufacturerCode && manufacturerCode !== 0) {
     return null;
   }
 
@@ -54,6 +54,9 @@ export function getManufacturerInfo(manufacturerCode: string | number[] | undefi
       .map(byte => byte.toString(16).padStart(2, '0'))
       .join('')
       .toLowerCase();
+  } else if (typeof manufacturerCode === 'number') {
+    // Handle single number format (e.g., 11 for Panasonic)
+    normalizedCode = manufacturerCode.toString(16).padStart(6, '0').toLowerCase();
   } else if (typeof manufacturerCode === 'string') {
     // Handle string format
     normalizedCode = manufacturerCode
@@ -72,7 +75,7 @@ export function getManufacturerInfo(manufacturerCode: string | number[] | undefi
  * @param manufacturerCode - manufacturer code in various formats
  * @returns Short manufacturer name or "Unknown" if not found
  */
-export function getManufacturerName(manufacturerCode: string | number[] | undefined): string {
+export function getManufacturerName(manufacturerCode: string | number[] | number | undefined): string {
   const info = getManufacturerInfo(manufacturerCode);
   return info?.shortName || 'Unknown';
 }
@@ -82,6 +85,6 @@ export function getManufacturerName(manufacturerCode: string | number[] | undefi
  * @param manufacturerCode - manufacturer code in various formats
  * @returns true if manufacturer is known
  */
-export function isKnownManufacturer(manufacturerCode: string | number[] | undefined): boolean {
+export function isKnownManufacturer(manufacturerCode: string | number[] | number | undefined): boolean {
   return getManufacturerInfo(manufacturerCode) !== null;
 }

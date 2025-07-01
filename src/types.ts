@@ -21,10 +21,10 @@ export interface EchonetPropertyResponse {
       status?: boolean;
       mode?: number;
       temperature?: number;
-      code?: string | number[];
-      manufacturer?: string | number[];
-      mfg?: string | number[];
-      manfCode?: string | number[];
+      code?: string | number[] | number;
+      manufacturer?: string | number[] | number;
+      mfg?: string | number[] | number;
+      manfCode?: string | number[] | number;
     };
   };
 }
@@ -53,7 +53,7 @@ export interface AccessoryContext {
   address: string;
   eoj: number[];
   uuid: string;
-  manufacturerCode?: string | number[];
+  manufacturerCode?: string | number[] | number;
   manufacturer?: {
     name: string;
     shortName: string;

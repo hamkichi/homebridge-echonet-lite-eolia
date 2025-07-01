@@ -89,7 +89,7 @@ export class EchonetLiteAirconPlatform implements DynamicPlatformPlugin {
               }
 
               // Get manufacturer information
-              let manufacturerCode: string | number[] | undefined;
+              let manufacturerCode: string | number[] | number | undefined;
               try {
                 const manufacturerRes = await promisify(this.el.getPropertyValue)
                   .bind(this.el)(address, eoj, 0x8A) as EchonetPropertyResponse;
@@ -138,7 +138,13 @@ export class EchonetLiteAirconPlatform implements DynamicPlatformPlugin {
     }, 60 * 1000);
   }
 
-  private addAccessory(device: EchonetDevice, address: string, eoj: number[], uuid: string, manufacturerCode?: string | number[]): void {
+  private addAccessory(
+    device: EchonetDevice,
+    address: string,
+    eoj: number[],
+    uuid: string,
+    manufacturerCode?: string | number[] | number,
+  ): void {
     const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
 
     if (existingAccessory) {
