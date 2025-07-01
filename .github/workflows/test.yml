@@ -175,6 +175,9 @@ jobs:
     - name: Install dependencies
       run: npm ci
     
+    - name: Build TypeScript
+      run: npm run build
+    
     - name: Verify package.json
       run: |
         # Check required fields
