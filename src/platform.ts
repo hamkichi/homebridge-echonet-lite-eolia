@@ -89,14 +89,31 @@ export class EchonetLiteAirconPlatform implements DynamicPlatformPlugin {
               }
 
               // Get manufacturer information
-              let manufacturerCode: string | undefined;
+              let manufacturerCode: string | number[] | undefined;
               try {
                 const manufacturerRes = await promisify(this.el.getPropertyValue)
                   .bind(this.el)(address, eoj, 0x8A) as EchonetPropertyResponse;
-                if (manufacturerRes.message.data && manufacturerRes.message.data.code) {
-                  manufacturerCode = manufacturerRes.message.data.code;
-                  const manufacturerName = getManufacturerName(manufacturerCode);
-                  this.log.info(`Discovered air conditioner: ${manufacturerName} (code: ${manufacturerCode}) at ${address}`);
+
+                this.log.debug('Raw manufacturer response:', JSON.stringify(manufacturerRes, null, 2));
+
+                if (manufacturerRes.message.data) {
+                  // Try different possible field names for manufacturer code
+                  manufacturerCode = manufacturerRes.message.data.code ||
+                                   manufacturerRes.message.data.manufacturer ||
+                                   manufacturerRes.message.data.mfg ||
+                                   manufacturerRes.message.data.manfCode;
+
+                  this.log.debug('Extracted manufacturer code:', manufacturerCode);
+
+                  if (manufacturerCode) {
+                    const manufacturerName = getManufacturerName(manufacturerCode);
+                    const codeStr = JSON.stringify(manufacturerCode);
+                    this.log.info(`Discovered air conditioner: ${manufacturerName} (code: ${codeStr}) at ${address}`);
+                  } else {
+                    this.log.warn('Manufacturer code field not found in response data');
+                  }
+                } else {
+                  this.log.warn('No data in manufacturer response');
                 }
               } catch (err) {
                 this.log.debug('Could not retrieve manufacturer code:',
@@ -121,7 +138,7 @@ export class EchonetLiteAirconPlatform implements DynamicPlatformPlugin {
     }, 60 * 1000);
   }
 
-  private addAccessory(device: EchonetDevice, address: string, eoj: number[], uuid: string, manufacturerCode?: string): void {
+  private addAccessory(device: EchonetDevice, address: string, eoj: number[], uuid: string, manufacturerCode?: string | number[]): void {
     const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
 
     if (existingAccessory) {
