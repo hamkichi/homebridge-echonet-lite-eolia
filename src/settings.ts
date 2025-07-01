@@ -8,4 +8,4 @@ export const PLATFORM_NAME = 'EchonetLiteAircon';
  */
 export const PLUGIN_NAME = 'homebridge-echonet-lite-aircon';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
