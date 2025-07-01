@@ -4,6 +4,7 @@ import { EoliaPlatform } from './platform.js';
 import { promisify } from 'util';
 import { JobQueue } from './jobQueue.js';
 import { EchonetPropertyResponse, EchonetNotification, EchonetSetPropertyValue, PropertyCache, CacheEntry } from './types.js';
+import { getManufacturerName } from './manufacturerCodes.js';
 
 /**
  * Platform Accessory
@@ -35,13 +36,14 @@ export class EoliaPlatformAccessory {
     this.address = accessory.context.address;
     this.eoj = accessory.context.eoj;
 
-    // set accessory information
-    // Manufacturer(0x8A): Panasonic's manufacturer code is 11 so set fixed value
-    // Model(0x8c): All my ACs return { code: 'CS-000000000' }
-    // SerialNumber(0x8D): All my ACs return null so set IP Addr
+    // Set accessory information using manufacturer code if available
+    const manufacturerName = accessory.context.manufacturerCode
+      ? getManufacturerName(accessory.context.manufacturerCode)
+      : 'Unknown';
+
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
-      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Panasonic')
-      .setCharacteristic(this.platform.Characteristic.Model, 'CS-000000000')
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, manufacturerName)
+      .setCharacteristic(this.platform.Characteristic.Model, 'Echonet Lite Air Conditioner')
       .setCharacteristic(this.platform.Characteristic.SerialNumber, accessory.context.address);
 
     // get the HeaterCooler service if it exists, otherwise create a new HeaterCooler service
