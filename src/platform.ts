@@ -94,8 +94,6 @@ export class EchonetLiteAirconPlatform implements DynamicPlatformPlugin {
                 const manufacturerRes = await promisify(this.el.getPropertyValue)
                   .bind(this.el)(address, eoj, 0x8A) as EchonetPropertyResponse;
 
-                this.log.debug('Raw manufacturer response:', JSON.stringify(manufacturerRes, null, 2));
-
                 if (manufacturerRes.message.data) {
                   // Try different possible field names for manufacturer code
                   manufacturerCode = manufacturerRes.message.data.code ||
@@ -103,17 +101,10 @@ export class EchonetLiteAirconPlatform implements DynamicPlatformPlugin {
                                    manufacturerRes.message.data.mfg ||
                                    manufacturerRes.message.data.manfCode;
 
-                  this.log.debug('Extracted manufacturer code:', manufacturerCode);
-
                   if (manufacturerCode) {
                     const manufacturerName = getManufacturerName(manufacturerCode);
-                    const codeStr = JSON.stringify(manufacturerCode);
-                    this.log.info(`Discovered air conditioner: ${manufacturerName} (code: ${codeStr}) at ${address}`);
-                  } else {
-                    this.log.warn('Manufacturer code field not found in response data');
+                    this.log.info(`Discovered air conditioner: ${manufacturerName} at ${address}`);
                   }
-                } else {
-                  this.log.warn('No data in manufacturer response');
                 }
               } catch (err) {
                 this.log.debug('Could not retrieve manufacturer code:',
