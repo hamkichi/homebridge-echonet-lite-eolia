@@ -47,6 +47,10 @@ jobs:
     needs: validate
     if: ${{ !inputs.dry_run && needs.validate.outputs.can_publish == 'true' && needs.validate.outputs.version_exists == 'false' }}
     
+    outputs:
+      pr_number: ${{ steps.create-pr.outputs.pr_number }}
+      pr_url: ${{ steps.create-pr.outputs.pr_url }}
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -107,12 +111,6 @@ jobs:
         fi
         echo "✅ Final validation passed"
     
-    - name: Create Git tag and commit
-      run: |
-        git add .
-        git commit -m "chore: bump version to ${{ needs.validate.outputs.new_version }}"
-        git tag "v${{ needs.validate.outputs.new_version }}"
-    
     - name: Publish to NPM
       run: |
         echo "🚀 Publishing to NPM with tag: ${{ inputs.npm_tag }}"
@@ -121,10 +119,67 @@ jobs:
       env:
         NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     
-    - name: Push changes and tags
+    - name: Create release branch and PR
       run: |
-        git push origin ${{ github.ref_name }}
-        git push origin "v${{ needs.validate.outputs.new_version }}"
+        VERSION="${{ needs.validate.outputs.new_version }}"
+        BRANCH_NAME="release/v$VERSION"
+        
+        # Create and checkout new branch
+        git checkout -b "$BRANCH_NAME"
+        
+        # Add and commit changes
+        git add .
+        git commit -m "chore: bump version to $VERSION"
+        
+        # Create and push git tag
+        git tag "v$VERSION"
+        git push origin "v$VERSION"
+        
+        # Push release branch
+        git push origin "$BRANCH_NAME"
+        
+        echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+      id: release-branch
+    
+    - name: Create Pull Request
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const version = '${{ needs.validate.outputs.new_version }}';
+          const branchName = '${{ steps.release-branch.outputs.branch_name }}';
+          const npmTag = '${{ inputs.npm_tag }}';
+          
+          const { data: pullRequest } = await github.rest.pulls.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `chore: release version ${version}`,
+            head: branchName,
+            base: 'main',
+            body: `## 📦 Release ${version}
+          
+          This PR contains the version bump and changes for release ${version}.
+          
+          **Published to NPM:** ✅ Yes (tag: \`${npmTag}\`)
+          **NPM Package:** https://www.npmjs.com/package/homebridge-echonet-lite-eolia
+          
+          ### Changes
+          - Version bump to ${version}
+          - Updated settings.ts VERSION constant
+          - Created git tag v${version}
+          
+          ### Installation
+          \`\`\`bash
+          npm install homebridge-echonet-lite-eolia@${version}
+          \`\`\`
+          
+          **Note:** This package has already been published to NPM. This PR is for record-keeping and version tracking.
+          
+          🤖 Generated automatically by NPM publish workflow.`
+          });
+          
+          core.setOutput('pr_number', pullRequest.number);
+          core.setOutput('pr_url', pullRequest.html_url);
+      id: create-pr
     
     - name: Create GitHub Release
       if: ${{ inputs.npm_tag == 'latest' }}
@@ -180,6 +235,7 @@ jobs:
         elif [ "$PUBLISH_RESULT" = "success" ]; then
           echo "🎉 Successfully published version ${{ needs.validate.outputs.new_version }} to NPM!"
           echo "Package: https://www.npmjs.com/package/homebridge-echonet-lite-eolia"
+          echo "Release PR: ${{ needs.publish.outputs.pr_url || 'Not created' }}"
         else
           echo "❌ Publish workflow failed"
           echo "Check the publish job logs for details"
