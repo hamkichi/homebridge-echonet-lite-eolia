@@ -36,7 +36,7 @@ describe('Basic Tests', () => {
     const pkg = require('../package.json');
 
     expect(pkg.name).toBe('homebridge-echonet-lite-aircon');
-    expect(pkg.version).toBe('1.0.0');
+    expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/); // Semantic version format
     expect(pkg.main).toBe('dist/index.js');
     expect(pkg.engines).toBeDefined();
     expect(pkg.engines.node).toBeDefined();
@@ -60,11 +60,14 @@ describe('Basic Tests', () => {
     const fs = require('fs');
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const path = require('path');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pkg = require('../package.json');
+    
     const settingsPath = path.join(__dirname, '../dist/settings.js');
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settingsContent = fs.readFileSync(settingsPath, 'utf8');
     expect(settingsContent).toContain('EchonetLiteAircon');
     expect(settingsContent).toContain('homebridge-echonet-lite-aircon');
-    expect(settingsContent).toContain('VERSION = \'1.0.0\'');
+    expect(settingsContent).toContain(`VERSION = '${pkg.version}'`);
   });
 });
