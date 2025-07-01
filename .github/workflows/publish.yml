@@ -13,9 +13,6 @@ on:
           - minor
           - major
           - prerelease
-          - prepatch
-          - preminor
-          - premajor
       dry_run:
         description: 'Dry run (test without publishing)'
         required: false
@@ -31,24 +28,186 @@ on:
           - beta
           - alpha
           - next
+      force_rebuild:
+        description: 'Force rebuild (ignore cache)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
-  validate:
-    name: Pre-publish Validation
-    uses: ./.github/workflows/shared-validation.yml
-    with:
-      version_type: ${{ inputs.version_type }}
-      dry_run_only: ${{ inputs.dry_run }}
-      npm_tag: ${{ inputs.npm_tag }}
+  # Verify CI status before publishing
+  verify-ci:
+    name: Verify CI Status
+    runs-on: ubuntu-latest
+    
+    outputs:
+      ci-success: ${{ steps.check-ci.outputs.success }}
+      build-cache-key: ${{ steps.check-ci.outputs.build_cache_key }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Check CI status
+      id: check-ci
+      uses: actions/github-script@v7
+      with:
+        script: |
+          // Get the latest CI run for this commit
+          const { data: runs } = await github.rest.actions.listWorkflowRuns({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            workflow_id: 'ci.yml',
+            head_sha: context.sha,
+            status: 'completed'
+          });
+          
+          const latestRun = runs.workflow_runs[0];
+          
+          if (!latestRun) {
+            core.setFailed('No CI run found for this commit. Run CI first.');
+            return;
+          }
+          
+          if (latestRun.conclusion !== 'success') {
+            core.setFailed(`CI failed with status: ${latestRun.conclusion}`);
+            return;
+          }
+          
+          console.log(`✅ CI passed: ${latestRun.html_url}`);
+          core.setOutput('success', 'true');
+          
+          // Generate build cache key for artifact reuse
+          const buildCacheKey = `${{ runner.os }}-build-${{ hashFiles('src/**/*.ts', 'tsconfig.json', 'package-lock.json') }}`;
+          core.setOutput('build_cache_key', buildCacheKey);
 
+  # Quick validation and version preparation
+  prepare-release:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    needs: verify-ci
+    if: needs.verify-ci.outputs.ci-success == 'true'
+    
+    outputs:
+      current_version: ${{ steps.version.outputs.current }}
+      new_version: ${{ steps.version.outputs.new }}
+      can_publish: ${{ steps.npm-check.outputs.can_publish }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+        registry-url: 'https://registry.npmjs.org'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Restore or rebuild assets
+      run: |
+        if [ "${{ inputs.force_rebuild }}" = "true" ]; then
+          echo "🔄 Force rebuild requested"
+          npm run build
+        else
+          # Try to restore from cache
+          cache_key="${{ needs.verify-ci.outputs.build-cache-key }}"
+          echo "🔍 Attempting to restore build cache: $cache_key"
+          
+          # If cache restore fails, rebuild
+          if ! npm run build; then
+            echo "⚠️ Cache miss or build failed, rebuilding..."
+            npm run build
+          fi
+        fi
+    
+    - name: Calculate version
+      id: version
+      run: |
+        CURRENT_VERSION=$(node -p "require('./package.json').version")
+        echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        
+        # Calculate new version
+        if [ "${{ inputs.version_type }}" = "prerelease" ]; then
+          NEW_VERSION=$(npm version --no-git-tag-version prerelease --preid=beta)
+        else
+          NEW_VERSION=$(npm version --no-git-tag-version ${{ inputs.version_type }})
+        fi
+        
+        NEW_VERSION=${NEW_VERSION#v}
+        echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
+        
+        echo "Version: $CURRENT_VERSION → $NEW_VERSION"
+        
+        # Reset package.json for validation
+        git checkout package.json
+    
+    - name: NPM availability check
+      id: npm-check
+      run: |
+        PACKAGE_NAME=$(node -p "require('./package.json').name")
+        NEW_VERSION="${{ steps.version.outputs.new }}"
+        
+        if npm view "$PACKAGE_NAME@$NEW_VERSION" version 2>/dev/null; then
+          echo "can_publish=false" >> $GITHUB_OUTPUT
+          echo "❌ Version $NEW_VERSION already exists on NPM"
+          exit 1
+        else
+          echo "can_publish=true" >> $GITHUB_OUTPUT
+          echo "✅ Version $NEW_VERSION is available"
+        fi
+    
+    - name: Dry run simulation
+      if: inputs.dry_run
+      run: |
+        echo "🚀 DRY RUN - Simulating NPM publish..."
+        
+        # Apply version changes
+        if [ "${{ inputs.version_type }}" = "prerelease" ]; then
+          npm version prerelease --preid=beta --no-git-tag-version
+        else
+          npm version ${{ inputs.version_type }} --no-git-tag-version
+        fi
+        
+        # Update settings.ts
+        if [ -f "src/settings.ts" ]; then
+          sed -i "s/export const VERSION = '[^']*';/export const VERSION = '${{ steps.version.outputs.new }}';/" src/settings.ts
+        fi
+        
+        # Rebuild and test
+        npm run build
+        npm run lint
+        npm run test
+        
+        # Simulate publish
+        npm publish --dry-run --tag ${{ inputs.npm_tag }}
+        
+        echo "✅ Dry run completed successfully!"
+    
+    - name: Upload prepared assets
+      if: ${{ !inputs.dry_run }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-assets-${{ github.sha }}
+        path: |
+          dist/
+          src/
+          package.json
+          package-lock.json
+        retention-days: 1
+
+  # Actual NPM publishing
   publish:
     name: Publish to NPM
     runs-on: ubuntu-latest
-    needs: validate
-    if: ${{ !inputs.dry_run && needs.validate.outputs.can_publish == 'true' && needs.validate.outputs.version_exists == 'false' }}
+    needs: [verify-ci, prepare-release]
+    if: ${{ !inputs.dry_run && needs.prepare-release.outputs.can_publish == 'true' }}
     
     outputs:
-      pr_number: ${{ steps.create-pr.outputs.pr_number }}
+      published_version: ${{ steps.publish.outputs.version }}
       pr_url: ${{ steps.create-pr.outputs.pr_url }}
     
     steps:
@@ -73,113 +232,112 @@ jobs:
     - name: Install dependencies
       run: npm ci
     
-    - name: Update version and rebuild
+    - name: Download prepared assets
+      uses: actions/download-artifact@v4
+      with:
+        name: release-assets-${{ github.sha }}
+        path: .
+    
+    - name: Apply version changes
       run: |
-        echo "📝 Updating version to ${{ needs.validate.outputs.new_version }}..."
+        NEW_VERSION="${{ needs.prepare-release.outputs.new_version }}"
+        echo "📝 Applying version $NEW_VERSION..."
         
-        # Update package.json version
+        # Update package.json
         if [ "${{ inputs.version_type }}" = "prerelease" ]; then
           npm version prerelease --preid=beta --no-git-tag-version
         else
           npm version ${{ inputs.version_type }} --no-git-tag-version
         fi
         
-        # Update version in settings.ts if it exists
+        # Update settings.ts
         if [ -f "src/settings.ts" ]; then
-          echo "→ Updating settings.ts VERSION..."
-          sed -i "s/export const VERSION = '[^']*';/export const VERSION = '${{ needs.validate.outputs.new_version }}';/" src/settings.ts
+          sed -i "s/export const VERSION = '[^']*';/export const VERSION = '$NEW_VERSION';/" src/settings.ts
         fi
         
-        # Rebuild with updated version
+        # Final rebuild
         npm run build
     
     - name: Final validation
       run: |
-        echo "🔍 Final validation before publish..."
+        echo "🔍 Final pre-publish validation..."
+        
+        # Quick lint and test
         npm run lint
         npm run test
         
-        # Verify version consistency
+        # Version consistency check
         PACKAGE_VERSION=$(node -p "require('./package.json').version")
-        if [ -f "dist/settings.js" ]; then
-          SETTINGS_VERSION=$(node -p "require('./dist/settings.js').VERSION || 'undefined'")
-          if [ "$SETTINGS_VERSION" != "undefined" ] && [ "$PACKAGE_VERSION" != "$SETTINGS_VERSION" ]; then
-            echo "❌ Version mismatch still exists!"
-            echo "Package: $PACKAGE_VERSION, Settings: $SETTINGS_VERSION"
-            exit 1
-          fi
+        SETTINGS_VERSION=$(node -p "require('./dist/settings.js').VERSION || 'undefined'")
+        
+        if [ "$SETTINGS_VERSION" != "undefined" ] && [ "$PACKAGE_VERSION" != "$SETTINGS_VERSION" ]; then
+          echo "❌ Version mismatch: package.json ($PACKAGE_VERSION) != settings.ts ($SETTINGS_VERSION)"
+          exit 1
         fi
+        
         echo "✅ Final validation passed"
     
     - name: Publish to NPM
+      id: publish
       run: |
         echo "🚀 Publishing to NPM with tag: ${{ inputs.npm_tag }}"
         npm publish --tag ${{ inputs.npm_tag }}
-        echo "✅ Published successfully!"
+        
+        PUBLISHED_VERSION=$(node -p "require('./package.json').version")
+        echo "version=$PUBLISHED_VERSION" >> $GITHUB_OUTPUT
+        echo "✅ Published version $PUBLISHED_VERSION successfully!"
       env:
         NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     
     - name: Create release branch and PR
+      id: create-pr
       run: |
-        VERSION="${{ needs.validate.outputs.new_version }}"
+        VERSION="${{ steps.publish.outputs.version }}"
         BRANCH_NAME="release/v$VERSION"
         
-        # Create and checkout new branch
+        # Create release branch
         git checkout -b "$BRANCH_NAME"
-        
-        # Add and commit changes
         git add .
-        git commit -m "chore: bump version to $VERSION"
+        git commit -m "chore: release version $VERSION"
         
-        # Create and push git tag
+        # Create and push tag
         git tag "v$VERSION"
         git push origin "v$VERSION"
-        
-        # Push release branch
         git push origin "$BRANCH_NAME"
         
-        echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
-      id: release-branch
-    
-    - name: Create Pull Request
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const version = '${{ needs.validate.outputs.new_version }}';
-          const branchName = '${{ steps.release-branch.outputs.branch_name }}';
-          const npmTag = '${{ inputs.npm_tag }}';
-          
-          const { data: pullRequest } = await github.rest.pulls.create({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            title: `chore: release version ${version}`,
-            head: branchName,
-            base: 'main',
-            body: `## 📦 Release ${version}
-          
-          This PR contains the version bump and changes for release ${version}.
-          
-          **Published to NPM:** ✅ Yes (tag: \`${npmTag}\`)
-          **NPM Package:** https://www.npmjs.com/package/homebridge-echonet-lite-eolia
-          
-          ### Changes
-          - Version bump to ${version}
-          - Updated settings.ts VERSION constant
-          - Created git tag v${version}
-          
-          ### Installation
-          \`\`\`bash
-          npm install homebridge-echonet-lite-eolia@${version}
-          \`\`\`
-          
-          **Note:** This package has already been published to NPM. This PR is for record-keeping and version tracking.
-          
-          🤖 Generated automatically by NPM publish workflow.`
-          });
-          
-          core.setOutput('pr_number', pullRequest.number);
-          core.setOutput('pr_url', pullRequest.html_url);
-      id: create-pr
+        # Create PR via GitHub API
+        PR_BODY="## 📦 Release $VERSION
+
+This automated PR contains the version bump and changes for release $VERSION.
+
+**✅ Published to NPM:** https://www.npmjs.com/package/homebridge-echonet-lite-eolia
+**🏷️ NPM Tag:** \`${{ inputs.npm_tag }}\`
+**📋 Version Type:** \`${{ inputs.version_type }}\`
+
+### Installation
+\`\`\`bash
+npm install homebridge-echonet-lite-eolia@$VERSION
+\`\`\`
+
+### Changes
+- Version bump: ${{ needs.prepare-release.outputs.current_version }} → $VERSION
+- Updated settings.ts VERSION constant
+- Created git tag v$VERSION
+
+**Note:** This package has already been published to NPM. Merge this PR to update the main branch with the version changes.
+
+🤖 Generated by NPM publish workflow"
+        
+        PR_URL=$(gh pr create \
+          --title "chore: release version $VERSION" \
+          --body "$PR_BODY" \
+          --base main \
+          --head "$BRANCH_NAME" || echo "")
+        
+        echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+        echo "Created PR: $PR_URL"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Create GitHub Release
       if: ${{ inputs.npm_tag == 'latest' }}
@@ -187,56 +345,91 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: v${{ needs.validate.outputs.new_version }}
-        release_name: Release v${{ needs.validate.outputs.new_version }}
+        tag_name: v${{ steps.publish.outputs.version }}
+        release_name: Release v${{ steps.publish.outputs.version }}
         body: |
-          ## Changes
+          ## 🚀 Release ${{ steps.publish.outputs.version }}
           
-          Version ${{ needs.validate.outputs.new_version }} of homebridge-echonet-lite-eolia
+          **NPM Package:** https://www.npmjs.com/package/homebridge-echonet-lite-eolia
           
           ### Installation
           ```bash
-          npm install homebridge-echonet-lite-eolia@${{ needs.validate.outputs.new_version }}
+          npm install homebridge-echonet-lite-eolia@${{ steps.publish.outputs.version }}
           ```
           
-          ### Full Changelog
-          See [CHANGELOG.md](CHANGELOG.md) for detailed changes.
+          ### Usage with Homebridge
+          Compatible with Homebridge 1.8.0+ and 2.0.0-beta.0+
+          
+          See [README.md](README.md) for configuration details.
         draft: false
-        prerelease: ${{ contains(needs.validate.outputs.new_version, 'beta') || contains(needs.validate.outputs.new_version, 'alpha') }}
+        prerelease: ${{ contains(steps.publish.outputs.version, 'beta') || contains(steps.publish.outputs.version, 'alpha') }}
 
+  # Cleanup and notification
   notify:
     name: Publish Notification
     runs-on: ubuntu-latest
-    needs: [validate, publish]
+    needs: [verify-ci, prepare-release, publish]
     if: always()
     
     steps:
-    - name: Notify results
+    - name: Cleanup artifacts
+      continue-on-error: true
+      uses: actions/github-script@v7
+      with:
+        script: |
+          // Clean up temporary artifacts
+          const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            run_id: context.runId
+          });
+          
+          for (const artifact of artifacts.data.artifacts) {
+            if (artifact.name.includes('release-assets-')) {
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id
+              });
+            }
+          }
+    
+    - name: Report results
       run: |
-        VALIDATION_RESULT="${{ needs.validate.result }}"
-        PUBLISH_RESULT="${{ needs.publish.result }}"
-        VERSION_EXISTS="${{ needs.validate.outputs.version_exists }}"
+        echo "## 📋 Publish Results"
+        echo ""
         
-        if [ "$VALIDATION_RESULT" != "success" ]; then
-          echo "❌ Validation failed - check the validation job logs"
+        if [ "${{ needs.verify-ci.result }}" != "success" ]; then
+          echo "❌ **CI verification failed**"
+          echo "Make sure CI passes before publishing"
           exit 1
-        elif [ "$VERSION_EXISTS" = "true" ]; then
-          echo "⚠️  Version ${{ needs.validate.outputs.new_version }} already exists on NPM"
-          echo "Cannot publish. Please use a different version type."
+        elif [ "${{ needs.prepare-release.result }}" != "success" ]; then
+          echo "❌ **Release preparation failed**"
+          echo "Check the prepare-release job logs"
           exit 1
         elif [ "${{ inputs.dry_run }}" = "true" ]; then
-          echo "✅ Dry run completed successfully!"
-          echo "Version ${{ needs.validate.outputs.new_version }} is ready for publishing"
+          echo "✅ **Dry run completed successfully!**"
           echo ""
-          echo "To actually publish:"
+          echo "**Ready to publish:**"
+          echo "- Version: ${{ needs.prepare-release.outputs.current_version }} → ${{ needs.prepare-release.outputs.new_version }}"
+          echo "- NPM tag: ${{ inputs.npm_tag }}"
+          echo ""
+          echo "**To publish for real:**"
           echo "1. Re-run this workflow"
-          echo "2. Set 'Dry run' to false"
-          echo "3. Keep the same version type: ${{ inputs.version_type }}"
-        elif [ "$PUBLISH_RESULT" = "success" ]; then
-          echo "🎉 Successfully published version ${{ needs.validate.outputs.new_version }} to NPM!"
-          echo "Package: https://www.npmjs.com/package/homebridge-echonet-lite-eolia"
-          echo "Release PR: ${{ needs.publish.outputs.pr_url || 'Not created' }}"
+          echo "2. Set 'Dry run' to **false**"
+          echo "3. Keep the same settings"
+        elif [ "${{ needs.publish.result }}" = "success" ]; then
+          echo "🎉 **Successfully published!**"
+          echo ""
+          echo "**Published version:** ${{ needs.publish.outputs.published_version }}"
+          echo "**NPM package:** https://www.npmjs.com/package/homebridge-echonet-lite-eolia"
+          echo "**Release PR:** ${{ needs.publish.outputs.pr_url }}"
+          echo ""
+          echo "**Next steps:**"
+          echo "1. Review and merge the release PR"
+          echo "2. Update documentation if needed"
         else
-          echo "❌ Publish workflow failed"
+          echo "❌ **Publishing failed**"
           echo "Check the publish job logs for details"
+          exit 1
         fi

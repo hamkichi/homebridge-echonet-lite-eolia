@@ -1,0 +1,376 @@
+name: Continuous Integration
+
+on:
+  push:
+  pull_request:
+    branches: [ main, develop ]
+
+# Prevent concurrent runs on the same branch
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast quality checks that can fail early
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    
+    outputs:
+      lint-cache-key: ${{ steps.cache-keys.outputs.lint }}
+      build-cache-key: ${{ steps.cache-keys.outputs.build }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+    
+    - name: Generate cache keys
+      id: cache-keys
+      run: |
+        echo "lint=${{ runner.os }}-lint-${{ hashFiles('**/*.ts', '**/*.js', 'eslint.config.js', 'package-lock.json') }}" >> $GITHUB_OUTPUT
+        echo "build=${{ runner.os }}-build-${{ hashFiles('src/**/*.ts', 'tsconfig.json', 'package-lock.json') }}" >> $GITHUB_OUTPUT
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Cache lint results
+      uses: actions/cache@v4
+      id: lint-cache
+      with:
+        path: .eslintcache
+        key: ${{ steps.cache-keys.outputs.lint }}
+    
+    - name: Run ESLint
+      if: steps.lint-cache.outputs.cache-hit != 'true'
+      run: |
+        npm run lint
+        touch .eslintcache  # Mark lint as successful
+    
+    - name: TypeScript type check
+      run: npx tsc --noEmit
+
+  # Build once, use everywhere
+  build:
+    name: Build Assets
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    
+    outputs:
+      dist-cache-key: ${{ steps.cache-dist.outputs.cache-primary-key }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Cache build output
+      uses: actions/cache@v4
+      id: cache-dist
+      with:
+        path: dist/
+        key: ${{ needs.quality-gate.outputs.build-cache-key }}
+    
+    - name: Build TypeScript
+      if: steps.cache-dist.outputs.cache-hit != 'true'
+      run: npm run build
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist-${{ github.sha }}
+        path: dist/
+        retention-days: 1
+
+  # Test matrix for multiple Node versions
+  test:
+    name: Test (Node.js ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    needs: [quality-gate, build]
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 20, 22]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Restore build cache
+      uses: actions/cache@v4
+      with:
+        path: dist/
+        key: ${{ needs.build.outputs.dist-cache-key }}
+        fail-on-cache-miss: true
+    
+    - name: Run tests
+      run: npm test
+    
+    - name: Upload coverage (Node 20 only)
+      if: matrix.node-version == 20
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-${{ github.sha }}
+        path: coverage/
+        retention-days: 7
+
+  # Security and compatibility checks
+  security:
+    name: Security & Compatibility
+    runs-on: ubuntu-latest
+    needs: [quality-gate, build]
+    
+    strategy:
+      matrix:
+        check: [security, homebridge-1.8.0, homebridge-2.0.0-beta.0]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Restore build cache
+      uses: actions/cache@v4
+      with:
+        path: dist/
+        key: ${{ needs.build.outputs.dist-cache-key }}
+        fail-on-cache-miss: true
+    
+    - name: Security scan
+      if: matrix.check == 'security'
+      run: |
+        npm audit --audit-level=moderate
+        
+        # Check for high/critical vulnerabilities
+        if npm audit --audit-level=high --json | grep -q '"level":"high"'; then
+          echo "❌ High severity vulnerabilities found!"
+          npm audit --audit-level=high
+          exit 1
+        else
+          echo "✅ No high severity vulnerabilities found"
+        fi
+    
+    - name: Homebridge compatibility test
+      if: matrix.check != 'security'
+      run: |
+        # Install specific Homebridge version
+        npm install --no-save homebridge@${{ matrix.check }}
+        
+        # Test plugin loading with relaxed type checking for beta versions
+        if [[ "${{ matrix.check }}" == *"beta"* ]]; then
+          echo "Building for Homebridge beta with relaxed type checking..."
+          npx tsc --skipLibCheck --noEmitOnError false || npx tsc --skipLibCheck --noEmitOnError false --allowJs
+        fi
+        
+        # Test plugin loading
+        node -e "
+        try {
+          const fs = require('fs');
+          if (!fs.existsSync('./dist/index.js')) {
+            throw new Error('Build output missing: dist/index.js');
+          }
+          
+          const plugin = require('./dist/index.js');
+          if (typeof plugin.default === 'function') {
+            console.log('✅ Plugin exports valid function');
+          } else {
+            console.error('❌ Plugin does not export function, got:', typeof plugin.default);
+            process.exit(1);
+          }
+          
+          const settings = require('./dist/settings.js');
+          if (settings.PLATFORM_NAME && settings.PLUGIN_NAME) {
+            console.log('✅ Settings loaded successfully');
+            console.log('Platform:', settings.PLATFORM_NAME);
+            console.log('Plugin:', settings.PLUGIN_NAME);
+          } else {
+            console.log('⚠️  Settings may have issues but plugin structure is valid');
+          }
+          
+        } catch (error) {
+          console.error('❌ Plugin failed to load:', error.message);
+          process.exit(1);
+        }
+        "
+
+  # Publish readiness check (only on main)
+  publish-readiness:
+    name: Publish Readiness Check
+    runs-on: ubuntu-latest
+    needs: [quality-gate, build, test, security]
+    if: github.ref == 'refs/heads/main'
+    
+    outputs:
+      can-publish: ${{ steps.publish-check.outputs.can_publish }}
+      next-version: ${{ steps.version-calc.outputs.next_version }}
+      version-type: ${{ steps.version-calc.outputs.version_type }}
+      npm-tag: ${{ steps.version-calc.outputs.npm_tag }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Restore build cache
+      uses: actions/cache@v4
+      with:
+        path: dist/
+        key: ${{ needs.build.outputs.dist-cache-key }}
+        fail-on-cache-miss: true
+    
+    - name: Calculate next version
+      id: version-calc
+      run: |
+        # Get current version and analyze commits
+        CURRENT_VERSION=$(node -p "require('./package.json').version")
+        echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        
+        # Check if current version is beta
+        if [[ "$CURRENT_VERSION" == *"beta"* ]]; then
+          VERSION_TYPE="prerelease"
+          NPM_TAG="beta"
+          echo "is_beta=true" >> $GITHUB_OUTPUT
+        else
+          # Analyze commit messages for conventional commits
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          if [ -z "$LAST_TAG" ]; then
+            COMMIT_RANGE="HEAD"
+          else
+            COMMIT_RANGE="$LAST_TAG..HEAD"
+          fi
+          
+          COMMITS=$(git log --pretty=format:"%s" $COMMIT_RANGE)
+          
+          if echo "$COMMITS" | grep -qE "(BREAKING CHANGE|!:)"; then
+            VERSION_TYPE="major"
+          elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?:"; then
+            VERSION_TYPE="minor"
+          else
+            VERSION_TYPE="patch"
+          fi
+          
+          NPM_TAG="latest"
+          echo "is_beta=false" >> $GITHUB_OUTPUT
+        fi
+        
+        echo "version_type=$VERSION_TYPE" >> $GITHUB_OUTPUT
+        echo "npm_tag=$NPM_TAG" >> $GITHUB_OUTPUT
+        
+        # Calculate next version
+        if [ "$VERSION_TYPE" = "prerelease" ]; then
+          NEXT_VERSION=$(npm version --no-git-tag-version prerelease --preid=beta)
+        else
+          NEXT_VERSION=$(npm version --no-git-tag-version $VERSION_TYPE)
+        fi
+        
+        NEXT_VERSION=${NEXT_VERSION#v}
+        echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+        
+        # Reset package.json
+        git checkout package.json
+        
+        echo "Version: $CURRENT_VERSION → $NEXT_VERSION ($VERSION_TYPE, tag: $NPM_TAG)"
+    
+    - name: Check publish readiness
+      id: publish-check
+      run: |
+        # Check if version already exists on NPM
+        PACKAGE_NAME=$(node -p "require('./package.json').name")
+        NEXT_VERSION="${{ steps.version-calc.outputs.next_version }}"
+        
+        if npm view "$PACKAGE_NAME@$NEXT_VERSION" version 2>/dev/null; then
+          echo "can_publish=false" >> $GITHUB_OUTPUT
+          echo "❌ Version $NEXT_VERSION already exists on NPM"
+        else
+          echo "can_publish=true" >> $GITHUB_OUTPUT
+          echo "✅ Version $NEXT_VERSION is available for publishing"
+        fi
+        
+        # Validate package.json
+        node -e "
+        const pkg = require('./package.json');
+        const required = ['name', 'version', 'description', 'main', 'engines', 'keywords', 'repository', 'license'];
+        const missing = required.filter(field => !pkg[field]);
+        if (missing.length > 0) {
+          console.error('❌ Missing required package.json fields:', missing.join(', '));
+          process.exit(1);
+        }
+        console.log('✅ Package.json is valid for publishing');
+        "
+        
+        # Test pack
+        npm pack --dry-run
+
+  # Status summary
+  ci-status:
+    name: CI Status Summary
+    runs-on: ubuntu-latest
+    needs: [quality-gate, build, test, security, publish-readiness]
+    if: always()
+    
+    steps:
+    - name: Report CI status
+      run: |
+        echo "## 📊 CI Status Summary"
+        echo ""
+        echo "**Quality Gate:** ${{ needs.quality-gate.result }}"
+        echo "**Build:** ${{ needs.build.result }}"
+        echo "**Tests:** ${{ needs.test.result }}"
+        echo "**Security:** ${{ needs.security.result }}"
+        echo "**Publish Readiness:** ${{ needs.publish-readiness.result }}"
+        echo ""
+        
+        if [ "${{ needs.publish-readiness.result }}" = "success" ] && [ "${{ needs.publish-readiness.outputs.can-publish }}" = "true" ]; then
+          echo "🚀 **Ready for release!**"
+          echo "Next version: ${{ needs.publish-readiness.outputs.next-version }}"
+          echo "Version type: ${{ needs.publish-readiness.outputs.version-type }}"
+          echo "NPM tag: ${{ needs.publish-readiness.outputs.npm-tag }}"
+          echo ""
+          echo "To publish: Use 'Publish to NPM' workflow with above settings"
+        elif [ "${{ needs.publish-readiness.outputs.can-publish }}" = "false" ]; then
+          echo "⚠️ **Cannot publish:** Version already exists on NPM"
+        else
+          echo "📝 **Not ready for release**"
+        fi
