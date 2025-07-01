@@ -6,6 +6,6 @@ export const PLATFORM_NAME = 'EoliaPlatform';
 /**
  * This must match the name of your plugin as defined the package.json
  */
-export const PLUGIN_NAME = 'homebridge-echonet-lite-eolia';
+export const PLUGIN_NAME = 'homebridge-echonet-lite-aircon';
 
 export const VERSION = '0.9.1-beta.0';

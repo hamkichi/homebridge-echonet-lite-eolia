@@ -1,8 +1,8 @@
-# Homebridge Plugin: Echonet Lite for Eolia
+# Homebridge Plugin: Echonet Lite for Aircon
 
-English: [README_en.md](https://github.com/hamkichi/homebridge-echonet-lite-eolia/blob/master/README_en.md)
+English: [README_en.md](https://github.com/hamkichi/homebridge-echonet-lite-aircon/blob/master/README_en.md)
 
-このHomebridgeプラグインは、Echonet Lite対応のパナソニック製エアコン（Eolia）を操作するためのプラグインです。
+このHomebridgeプラグインは、Echonet Lite対応エアコンを操作するためのプラグインです。
 
 以下の操作をiOSのHomeアプリから実行できるようになります。
 
