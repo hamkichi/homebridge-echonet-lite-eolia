@@ -31,6 +31,9 @@ jobs:
     - name: Run ESLint
       run: npm run lint
     
+    - name: Build TypeScript
+      run: npm run build
+    
     - name: Run tests
       run: npm run test:coverage
     
@@ -42,9 +45,6 @@ jobs:
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
-    
-    - name: Build TypeScript
-      run: npm run build
     
     - name: Test build output
       run: |

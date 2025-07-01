@@ -22,11 +22,13 @@ describe('Basic Tests', () => {
     const path = require('path');
 
     // Check that built files exist
-    expect(fs.existsSync(path.join(__dirname, '../dist/index.js'))).toBe(true);
-    expect(fs.existsSync(path.join(__dirname, '../dist/platform.js'))).toBe(true);
-    expect(fs.existsSync(path.join(__dirname, '../dist/platformAccessory.js'))).toBe(true);
-    expect(fs.existsSync(path.join(__dirname, '../dist/jobQueue.js'))).toBe(true);
-    expect(fs.existsSync(path.join(__dirname, '../dist/settings.js'))).toBe(true);
+    const distPath = path.join(__dirname, '../dist');
+    expect(fs.existsSync(distPath)).toBe(true);
+    expect(fs.existsSync(path.join(distPath, 'index.js'))).toBe(true);
+    expect(fs.existsSync(path.join(distPath, 'platform.js'))).toBe(true);
+    expect(fs.existsSync(path.join(distPath, 'platformAccessory.js'))).toBe(true);
+    expect(fs.existsSync(path.join(distPath, 'jobQueue.js'))).toBe(true);
+    expect(fs.existsSync(path.join(distPath, 'settings.js'))).toBe(true);
   });
 
   test('should verify package.json has required fields', () => {
@@ -46,7 +48,9 @@ describe('Basic Tests', () => {
     const fs = require('fs');
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const path = require('path');
-    const indexContent = fs.readFileSync(path.join(__dirname, '../dist/index.js'), 'utf8');
+    const indexPath = path.join(__dirname, '../dist/index.js');
+    expect(fs.existsSync(indexPath)).toBe(true);
+    const indexContent = fs.readFileSync(indexPath, 'utf8');
     expect(indexContent).toContain('PLATFORM_NAME');
     expect(indexContent).toContain('EoliaPlatform');
   });
@@ -56,7 +60,9 @@ describe('Basic Tests', () => {
     const fs = require('fs');
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const path = require('path');
-    const settingsContent = fs.readFileSync(path.join(__dirname, '../dist/settings.js'), 'utf8');
+    const settingsPath = path.join(__dirname, '../dist/settings.js');
+    expect(fs.existsSync(settingsPath)).toBe(true);
+    const settingsContent = fs.readFileSync(settingsPath, 'utf8');
     expect(settingsContent).toContain('EoliaPlatform');
     expect(settingsContent).toContain('homebridge-echonet-lite-eolia');
     expect(settingsContent).toContain('1.0.0');
