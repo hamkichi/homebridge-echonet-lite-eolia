@@ -1,0 +1,280 @@
+name: Publish to NPM
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prerelease
+          - prepatch
+          - preminor
+          - premajor
+      dry_run:
+        description: 'Dry run (test without publishing)'
+        required: false
+        default: true
+        type: boolean
+      npm_tag:
+        description: 'NPM tag for publishing'
+        required: false
+        default: 'latest'
+        type: choice
+        options:
+          - latest
+          - beta
+          - alpha
+          - next
+
+jobs:
+  validate:
+    name: Pre-publish Validation
+    runs-on: ubuntu-latest
+    
+    outputs:
+      current_version: ${{ steps.version.outputs.current }}
+      new_version: ${{ steps.version.outputs.new }}
+      can_publish: ${{ steps.validation.outputs.result }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+        registry-url: 'https://registry.npmjs.org'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Get current version
+      id: version
+      run: |
+        CURRENT_VERSION=$(node -p "require('./package.json').version")
+        echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        
+        # Calculate new version
+        if [ "${{ inputs.version_type }}" = "prerelease" ]; then
+          NEW_VERSION=$(npm version --no-git-tag-version ${{ inputs.version_type }} --preid=beta)
+        else
+          NEW_VERSION=$(npm version --no-git-tag-version ${{ inputs.version_type }})
+        fi
+        
+        # Remove 'v' prefix if present
+        NEW_VERSION=${NEW_VERSION#v}
+        echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
+        
+        echo "Version change: $CURRENT_VERSION → $NEW_VERSION"
+        
+        # Reset package.json to avoid committing version change during validation
+        git checkout package.json
+    
+    - name: Run comprehensive validation
+      id: validation
+      run: |
+        echo "🔍 Running pre-publish validation..."
+        
+        # 1. Lint check
+        echo "→ Running ESLint..."
+        npm run lint
+        
+        # 2. Build check
+        echo "→ Building TypeScript..."
+        npm run build
+        
+        # 3. Test check
+        echo "→ Running tests..."
+        npm run test
+        
+        # 4. Package validation
+        echo "→ Validating package.json..."
+        node -e "
+        const pkg = require('./package.json');
+        const required = ['name', 'version', 'description', 'main', 'engines', 'keywords', 'repository', 'license'];
+        const missing = required.filter(field => !pkg[field]);
+        if (missing.length > 0) {
+          console.error('❌ Missing required fields:', missing.join(', '));
+          process.exit(1);
+        }
+        console.log('✅ Package.json validation passed');
+        "
+        
+        # 5. Version consistency check
+        echo "→ Checking version consistency..."
+        PACKAGE_VERSION=$(node -p "require('./package.json').version")
+        if [ -f "dist/settings.js" ]; then
+          SETTINGS_VERSION=$(node -p "require('./dist/settings.js').VERSION || 'undefined'")
+          if [ "$SETTINGS_VERSION" != "undefined" ] && [ "$PACKAGE_VERSION" != "$SETTINGS_VERSION" ]; then
+            echo "⚠️  Version mismatch detected: package.json ($PACKAGE_VERSION) != settings.ts ($SETTINGS_VERSION)"
+            echo "This will be updated during publish process"
+          fi
+        fi
+        
+        # 6. Check if version already exists on npm
+        echo "→ Checking NPM registry..."
+        PACKAGE_NAME=$(node -p "require('./package.json').name")
+        if npm view "$PACKAGE_NAME@${{ steps.version.outputs.new }}" version 2>/dev/null; then
+          echo "❌ Version ${{ steps.version.outputs.new }} already exists on NPM!"
+          exit 1
+        else
+          echo "✅ Version ${{ steps.version.outputs.new }} is available"
+        fi
+        
+        # 7. Test pack
+        echo "→ Testing package creation..."
+        npm pack --dry-run
+        
+        echo "result=true" >> $GITHUB_OUTPUT
+        echo "✅ All validation checks passed!"
+
+  publish:
+    name: Publish to NPM
+    runs-on: ubuntu-latest
+    needs: validate
+    if: needs.validate.outputs.can_publish == 'true'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+        registry-url: 'https://registry.npmjs.org'
+    
+    - name: Configure Git
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Update version and settings
+      run: |
+        echo "📝 Updating version to ${{ needs.validate.outputs.new }}..."
+        
+        # Update package.json version
+        if [ "${{ inputs.version_type }}" = "prerelease" ]; then
+          npm version ${{ inputs.version_type }} --preid=beta --no-git-tag-version
+        else
+          npm version ${{ inputs.version_type }} --no-git-tag-version
+        fi
+        
+        # Update version in settings.ts if it exists
+        if [ -f "src/settings.ts" ]; then
+          echo "→ Updating settings.ts VERSION..."
+          sed -i "s/export const VERSION = .*/export const VERSION = '${{ needs.validate.outputs.new }}';/" src/settings.ts
+        fi
+        
+        # Rebuild with updated version
+        npm run build
+    
+    - name: Run final validation
+      run: |
+        echo "🔍 Final validation before publish..."
+        npm run lint
+        npm run test
+        
+        # Verify version consistency
+        PACKAGE_VERSION=$(node -p "require('./package.json').version")
+        if [ -f "dist/settings.js" ]; then
+          SETTINGS_VERSION=$(node -p "require('./dist/settings.js').VERSION || 'undefined'")
+          if [ "$SETTINGS_VERSION" != "undefined" ] && [ "$PACKAGE_VERSION" != "$SETTINGS_VERSION" ]; then
+            echo "❌ Version mismatch still exists!"
+            echo "Package: $PACKAGE_VERSION, Settings: $SETTINGS_VERSION"
+            exit 1
+          fi
+        fi
+        echo "✅ Final validation passed"
+    
+    - name: Create Git tag and commit
+      if: ${{ !inputs.dry_run }}
+      run: |
+        git add .
+        git commit -m "chore: bump version to ${{ needs.validate.outputs.new }}"
+        git tag "v${{ needs.validate.outputs.new }}"
+    
+    - name: Publish to NPM (Dry Run)
+      if: ${{ inputs.dry_run }}
+      run: |
+        echo "🚀 DRY RUN - Would publish to NPM with tag: ${{ inputs.npm_tag }}"
+        npm publish --dry-run --tag ${{ inputs.npm_tag }}
+        echo "✅ Dry run completed successfully!"
+        echo "To actually publish, run this workflow again with 'Dry run' unchecked"
+    
+    - name: Publish to NPM
+      if: ${{ !inputs.dry_run }}
+      run: |
+        echo "🚀 Publishing to NPM with tag: ${{ inputs.npm_tag }}"
+        npm publish --tag ${{ inputs.npm_tag }}
+        echo "✅ Published successfully!"
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    
+    - name: Push changes and tags
+      if: ${{ !inputs.dry_run }}
+      run: |
+        git push origin ${{ github.ref_name }}
+        git push origin "v${{ needs.validate.outputs.new }}"
+    
+    - name: Create GitHub Release
+      if: ${{ !inputs.dry_run && inputs.npm_tag == 'latest' }}
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ needs.validate.outputs.new }}
+        release_name: Release v${{ needs.validate.outputs.new }}
+        body: |
+          ## Changes
+          
+          Version ${{ needs.validate.outputs.new }} of homebridge-echonet-lite-eolia
+          
+          ### Installation
+          ```bash
+          npm install homebridge-echonet-lite-eolia@${{ needs.validate.outputs.new }}
+          ```
+          
+          ### Full Changelog
+          See [CHANGELOG.md](CHANGELOG.md) for detailed changes.
+        draft: false
+        prerelease: ${{ contains(needs.validate.outputs.new, 'beta') || contains(needs.validate.outputs.new, 'alpha') }}
+
+  notify:
+    name: Publish Notification
+    runs-on: ubuntu-latest
+    needs: [validate, publish]
+    if: always()
+    
+    steps:
+    - name: Notify results
+      run: |
+        if [ "${{ needs.publish.result }}" = "success" ]; then
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "✅ Dry run completed successfully!"
+            echo "Version ${{ needs.validate.outputs.new }} is ready for publishing"
+          else
+            echo "🎉 Successfully published version ${{ needs.validate.outputs.new }} to NPM!"
+            echo "Package: https://www.npmjs.com/package/homebridge-echonet-lite-eolia"
+          fi
+        else
+          echo "❌ Publish workflow failed"
+          echo "Check the logs for details"
+        fi

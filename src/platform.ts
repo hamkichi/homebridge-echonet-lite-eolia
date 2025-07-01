@@ -1,7 +1,8 @@
 import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
 
-import { PLATFORM_NAME, PLUGIN_NAME, VERSION } from './settings';
-import { EoliaPlatformAccessory } from './platformAccessory';
+import { PLATFORM_NAME, PLUGIN_NAME, VERSION } from './settings.js';
+import { EoliaPlatformAccessory } from './platformAccessory.js';
+import { EchonetDevice, EchonetDiscoveryResult, EchonetPropertyResponse } from './types.js';
 
 import EchonetLite from 'node-echonet-lite';
 import { promisify } from 'util';
@@ -36,9 +37,9 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
     this.api.on('didFinishLaunching', () => {
       log.debug('Executed didFinishLaunching callback');
       // run the method to discover / register your devices as accessories
-      this.el.init((err: string)=>{
+      this.el.init((err: Error | null) => {
         if (err) {
-          log.error(err);
+          log.error('Failed to initialize Echonet Lite:', err.message);
         } else {
           this.discoverDevices();
         }
@@ -51,7 +52,7 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
    * This function is invoked when homebridge restores cached accessories from disk at startup.
    * It should be used to setup event handlers for characteristics and update respective values.
    */
-  configureAccessory(accessory: PlatformAccessory) {
+  configureAccessory(accessory: PlatformAccessory): void {
     this.log.info('Loading accessory from cache:', accessory.displayName);
 
     // add the restored accessory to the accessories cache so we can track if it has already been registered
@@ -63,43 +64,47 @@ export class EoliaPlatform implements DynamicPlatformPlugin {
    * Accessories must only be registered once, previously created accessories
    * must not be registered again to prevent "duplicate UUID" errors.
    */
-  async discoverDevices() {
+  async discoverDevices(): Promise<void> {
     // Start to discover Echonet Lite devices
-    this.el.startDiscovery(async (err, res) => {
-      if(err) {
-        this.log.error(err);
+    this.el.startDiscovery(async (err: Error | null, res: EchonetDiscoveryResult) => {
+      if (err) {
+        this.log.error('Discovery error:', err.message);
       } else {
-        const device = res['device'];
-        const address = device['address'];
+        const device = res.device;
+        const address = device.address;
 
-        for (const eoj of device['eoj']) {
+        for (const eoj of device.eoj) {
           try {
             // Add to homebridge only if discovered device is AC
-            const group_code = eoj[0];
-            const class_code = eoj[1];
-            if (group_code === 0x01 && class_code === 0x30) {
-              res = await promisify(this.el.getPropertyValue).bind(this.el)(address, eoj, 0x83);
-              let uuid;
-              if (res['message']['data']) {
-                uuid = this.api.hap.uuid.generate(res['message']['data']['uid']);
+            const groupCode = eoj[0];
+            const classCode = eoj[1];
+            if (groupCode === 0x01 && classCode === 0x30) {
+              const propertyRes = await promisify(this.el.getPropertyValue).bind(this.el)(address, eoj, 0x83) as EchonetPropertyResponse;
+              let uuid: string;
+              if (propertyRes.message.data && propertyRes.message.data.uid) {
+                uuid = this.api.hap.uuid.generate(propertyRes.message.data.uid);
               } else {
                 uuid = this.api.hap.uuid.generate(address);
               }
               this.addAccessory(device, address, eoj, uuid);
             }
           } catch (err) {
-            this.log.error(err);
+            if (err instanceof Error) {
+              this.log.error('Error processing device:', err.message);
+            } else {
+              this.log.error('Unknown error processing device:', String(err));
+            }
           }
         }
       }
     });
 
-    setTimeout(()=>{
+    setTimeout(() => {
       this.el.stopDiscovery();
     }, 60 * 1000);
   }
 
-  addAccessory(device, address, eoj, uuid){
+  private addAccessory(device: EchonetDevice, address: string, eoj: number[], uuid: string): void {
     const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
 
     if (existingAccessory) {
