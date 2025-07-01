@@ -9,6 +9,7 @@ on:
         default: 'patch'
         type: choice
         options:
+          - current
           - patch
           - minor
           - major
@@ -132,13 +133,17 @@ jobs:
         echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
         
         # Calculate new version
-        if [ "${{ inputs.version_type }}" = "prerelease" ]; then
+        if [ "${{ inputs.version_type }}" = "current" ]; then
+          NEW_VERSION="$CURRENT_VERSION"
+          echo "📝 Keeping current version: $NEW_VERSION"
+        elif [ "${{ inputs.version_type }}" = "prerelease" ]; then
           NEW_VERSION=$(npm version --no-git-tag-version prerelease --preid=beta)
+          NEW_VERSION=${NEW_VERSION#v}
         else
           NEW_VERSION=$(npm version --no-git-tag-version ${{ inputs.version_type }})
+          NEW_VERSION=${NEW_VERSION#v}
         fi
         
-        NEW_VERSION=${NEW_VERSION#v}
         echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
         
         echo "Version: $CURRENT_VERSION → $NEW_VERSION"
@@ -160,7 +165,18 @@ jobs:
         }
         
         # Auto-increment logic for different version types
-        if [ "${{ inputs.version_type }}" = "prerelease" ]; then
+        if [ "${{ inputs.version_type }}" = "current" ]; then
+          # For current version, just check if it exists
+          if version_exists "$PROPOSED_VERSION"; then
+            echo "⚠️  Version $PROPOSED_VERSION already exists on NPM"
+            echo "💡 Suggestion: Use a different version type to increment"
+            echo "can_publish=false" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            FINAL_VERSION="$PROPOSED_VERSION"
+            echo "✅ Current version $FINAL_VERSION is available for publishing"
+          fi
+        elif [ "${{ inputs.version_type }}" = "prerelease" ]; then
           # For prerelease, auto-increment beta number
           BASE_VERSION=$(echo "$PROPOSED_VERSION" | sed 's/-beta\.[0-9]*$//')
           BETA_NUM=0
