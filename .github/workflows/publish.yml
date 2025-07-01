@@ -199,14 +199,21 @@ jobs:
         
         # Apply final version changes
         FINAL_VERSION="${{ steps.npm-check.outputs.final_version }}"
+        CURRENT_VERSION=$(node -p "require('./package.json').version")
         echo "📝 Applying final version $FINAL_VERSION..."
         
-        # Update package.json to final version
-        npm version --no-git-tag-version "$FINAL_VERSION"
+        # Update package.json to final version (only if different)
+        if [ "$CURRENT_VERSION" != "$FINAL_VERSION" ]; then
+          npm version --no-git-tag-version "$FINAL_VERSION"
+          echo "✅ Updated package.json: $CURRENT_VERSION → $FINAL_VERSION"
+        else
+          echo "ℹ️  Version unchanged: $FINAL_VERSION"
+        fi
         
         # Update settings.ts with final version
         if [ -f "src/settings.ts" ]; then
           sed -i "s/export const VERSION = '[^']*';/export const VERSION = '$FINAL_VERSION';/" src/settings.ts
+          echo "✅ Updated settings.ts VERSION constant"
         fi
         
         # Rebuild and test
@@ -273,14 +280,21 @@ jobs:
     - name: Apply version changes
       run: |
         FINAL_VERSION="${{ needs.prepare-release.outputs.final_version }}"
+        CURRENT_VERSION=$(node -p "require('./package.json').version")
         echo "📝 Applying final version $FINAL_VERSION..."
         
-        # Update package.json to final version
-        npm version --no-git-tag-version "$FINAL_VERSION"
+        # Update package.json to final version (only if different)
+        if [ "$CURRENT_VERSION" != "$FINAL_VERSION" ]; then
+          npm version --no-git-tag-version "$FINAL_VERSION"
+          echo "✅ Updated package.json: $CURRENT_VERSION → $FINAL_VERSION"
+        else
+          echo "ℹ️  Version unchanged: $FINAL_VERSION"
+        fi
         
         # Update settings.ts
         if [ -f "src/settings.ts" ]; then
           sed -i "s/export const VERSION = '[^']*';/export const VERSION = '$FINAL_VERSION';/" src/settings.ts
+          echo "✅ Updated settings.ts VERSION constant"
         fi
         
         # Final rebuild
