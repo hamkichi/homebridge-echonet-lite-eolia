@@ -352,8 +352,13 @@ export class EchonetLiteAirconAccessory {
         case 0xB3: // target temperature
           if (p.edt.temperature !== undefined) {
             this.platform.log.debug('Received status update - target temperature:', p.edt.temperature);
-            this.service.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, p.edt.temperature);
-            this.service.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, p.edt.temperature);
+            // Ensure temperature is within valid range (16-30°C)
+            const validTemperature = Math.max(16, Math.min(30, p.edt.temperature));
+            if (validTemperature !== p.edt.temperature) {
+              this.platform.log.warn(`Temperature ${p.edt.temperature}°C is out of range, clamped to ${validTemperature}°C`);
+            }
+            this.service.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, validTemperature);
+            this.service.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, validTemperature);
           }
           break;
         case 0xBB: // current temperature
@@ -429,12 +434,6 @@ export class EchonetLiteAirconAccessory {
     }
   }
 
-  /**
-   * Promisified Echonet.getPropertyValue (legacy method)
-   */
-  private async getPropertyValue(address: string, eoj: number[], edt: number): Promise<EchonetPropertyResponse> {
-    return this.getPropertyValueWithCache(address, eoj, edt, this.cacheTTL.temperature);
-  }
 
   /**
    * Clear cache for specific property
