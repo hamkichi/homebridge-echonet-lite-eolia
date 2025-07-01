@@ -2,7 +2,6 @@ name: Test and Build
 
 on:
   push:
-    branches: [ main, develop, v* ]
   pull_request:
     branches: [ main, develop ]
 
